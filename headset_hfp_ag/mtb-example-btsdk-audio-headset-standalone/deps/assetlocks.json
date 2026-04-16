@@ -1,0 +1,26 @@
+[
+    {
+        "asset-name": "20706A2",
+        "locked-commit": "release-v4.9.5"
+    },
+    {
+        "asset-name": "btsdk-common",
+        "locked-commit": "release-v4.7.0"
+    },
+    {
+        "asset-name": "btsdk-include",
+        "locked-commit": "release-v4.9.3"
+    },
+    {
+        "asset-name": "btsdk-tools",
+        "locked-commit": "release-v3.3.0"
+    },
+    {
+        "asset-name": "btsdk-utils",
+        "locked-commit": "release-v4.9.3"
+    },
+    {
+        "asset-name": "core-make",
+        "locked-commit": "release-v1.9.1"
+    }
+]

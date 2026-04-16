@@ -1,0 +1,54 @@
+# Track source and project files, ignore generated/vendor content.
+
+# Shared fetched dependencies and nested vendor repos
+**/mtb_shared/
+
+# ModusToolbox and firmware build output
+**/build/
+**/Debug/
+**/Release/
+**/generated/
+
+# Python caches and virtualenvs
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.venv/
+**/venv/
+
+# Temporary/editor files
+**/~$*
+**/*.tmp
+**/*.temp
+**/*.bak
+
+# Python bytecode
+**/*.pyc
+**/*.pyo
+**/*.pyd
+
+# Firmware/tool artifacts
+**/*.o
+**/*.obj
+**/*.d
+**/*.elf
+**/*.hex
+**/*.hcd
+**/*.map
+**/*.btp
+**/*.cgs
+**/*.asm
+**/*.rsp
+**/*.bin
+**/*.exe
+**/*.dll
+**/*.so
+**/*.dylib
+**/*.a
+**/*.lib
+
+# Runtime state / generated docs
+**/bridge_state.json
+**/*.pdf
+**/*.html
+mtb-example-btsdk-audio-watch/
