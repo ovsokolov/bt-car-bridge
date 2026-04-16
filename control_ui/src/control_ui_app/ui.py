@@ -39,6 +39,7 @@ class SideWidgets:
     log_text: tk.Text
     open_button: ttk.Button
     close_button: ttk.Button
+    refresh_button: ttk.Button
     port_combo: ttk.Combobox
     devices: list[str]
 
@@ -131,6 +132,9 @@ class BridgeApp:
         port_combo.pack(side=tk.LEFT, padx=(6, 6))
         port_combo.bind("<<ComboboxSelected>>", lambda _event, key=side: self._on_port_changed(key))
         port_combo.bind("<FocusOut>", lambda _event, key=side: self._on_port_changed(key))
+
+        refresh_button = ttk.Button(row, text="Refresh", command=self.refresh_ports)
+        refresh_button.pack(side=tk.LEFT, padx=(0, 6))
 
         open_button = ttk.Button(row, text="Open", command=lambda key=side: self.open_session(key))
         open_button.pack(side=tk.LEFT)
@@ -272,6 +276,7 @@ class BridgeApp:
             log_text=log_text,
             open_button=open_button,
             close_button=close_button,
+            refresh_button=refresh_button,
             port_combo=port_combo,
             devices=[],
         )
@@ -307,6 +312,7 @@ class BridgeApp:
 
     def close_session(self, side: str) -> None:
         self.sessions[side].close()
+        self.refresh_ports()
         self._refresh_side(side)
 
     def reconnect_preferred(self, side: str) -> None:
@@ -523,6 +529,7 @@ class BridgeApp:
         self._save_state()
         for session in self.sessions.values():
             session.close()
+        self.refresh_ports()
         self.root.destroy()
 
 

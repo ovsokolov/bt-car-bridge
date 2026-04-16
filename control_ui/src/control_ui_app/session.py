@@ -170,6 +170,8 @@ class SerialBridgeSession:
         self._stop_event.clear()
         try:
             self._serial = serial.Serial(self.info.port, self.info.baud_rate, timeout=0.2)
+            self._serial.reset_input_buffer()
+            self._serial.reset_output_buffer()
         except Exception as exc:
             self._serial = None
             self.info.is_open = False
@@ -190,14 +192,37 @@ class SerialBridgeSession:
     def close(self) -> None:
         with self._close_lock:
             already_closed = not self.info.is_open and self._serial is None
+            reader_thread = self._reader_thread
+            sequence_thread = self._sequence_thread
             self._stop_event.set()
             serial_port = self._serial
             self._serial = None
+            self._buffer.clear()
+
             if serial_port is not None:
+                try:
+                    if hasattr(serial_port, "cancel_read"):
+                        serial_port.cancel_read()
+                except Exception:
+                    pass
+                try:
+                    if hasattr(serial_port, "cancel_write"):
+                        serial_port.cancel_write()
+                except Exception:
+                    pass
                 try:
                     serial_port.close()
                 except Exception:
                     pass
+
+            current_thread = threading.current_thread()
+            if reader_thread is not None and reader_thread.is_alive() and reader_thread is not current_thread:
+                reader_thread.join(timeout=1.0)
+            if sequence_thread is not None and sequence_thread.is_alive() and sequence_thread is not current_thread:
+                sequence_thread.join(timeout=1.0)
+
+            self._reader_thread = None
+            self._sequence_thread = None
             self.info.is_open = False
             self.info.ag_connected = False
             self.info.avrc_connected = False
@@ -205,7 +230,7 @@ class SerialBridgeSession:
             self.info.last_status = "Closed"
             self._emit("state", status=self.info.last_status)
             if not already_closed:
-                self._log("Closed serial session")
+                self._log("Closed serial session and released COM port")
 
     def request_version(self) -> None:
         self.send(COMMAND_GET_VERSION)
@@ -366,7 +391,9 @@ class SerialBridgeSession:
                 return
             self._log(label)
             action()
-            time.sleep(wait_seconds)
+            if self._stop_event.wait(wait_seconds):
+                self._log("AG one-step reconnect interrupted while waiting for the next step")
+                return
         self._log("AG one-step reconnect finished")
 
     def send(self, opcode_value: int, payload: bytes = b"") -> bool:
@@ -389,11 +416,15 @@ class SerialBridgeSession:
         return True
 
     def _reader_loop(self) -> None:
-        assert self._serial is not None
         while not self._stop_event.is_set():
+            serial_port = self._serial
+            if serial_port is None:
+                break
             try:
-                chunk = self._serial.read(512)
+                chunk = serial_port.read(512)
             except Exception as exc:
+                if self._stop_event.is_set():
+                    break
                 self.info.last_status = f"Read failed: {exc}"
                 self._emit("state", status=self.info.last_status)
                 self._log(self.info.last_status)
@@ -406,7 +437,8 @@ class SerialBridgeSession:
                 if packet is None:
                     break
                 self._handle_packet(packet)
-        self.close()
+        if not self._stop_event.is_set():
+            self.close()
 
     def _handle_packet(self, packet: Packet) -> None:
         message = decode_rx_message(packet.opcode, packet.payload)
