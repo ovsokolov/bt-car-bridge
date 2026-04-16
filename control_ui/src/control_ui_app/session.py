@@ -87,8 +87,13 @@ class SerialPortInfo:
     pid: Optional[int] = None
     interface: str = ""
 
+    def dropdown_label(self) -> str:
+        primary = self.product or self.description or self.manufacturer or "Serial device"
+        vendor = self.manufacturer or "USB"
+        return f"{self.device} | {primary} | {vendor} | WICED HCI"
+
     def short_label(self) -> str:
-        return f"{self.device} - {self.description or 'Serial device'}"
+        return self.dropdown_label()
 
     def detail_lines(self) -> list[str]:
         lines = [f"Port: {self.device}"]

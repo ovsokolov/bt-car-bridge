@@ -56,6 +56,7 @@ class BridgeApp:
         self._event_queue: Queue[tuple[str, str, dict]] = Queue()
         self._port_options: list[str] = []
         self._port_map: dict[str, SerialPortInfo] = {}
+        self._port_label_to_device: dict[str, str] = {}
         self._side_widgets: dict[str, SideWidgets] = {}
 
         self.phone_session = SerialBridgeSession(self.state.phone_session, self._make_event_sink("phone"))
@@ -128,7 +129,7 @@ class BridgeApp:
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(row, text="Port").pack(side=tk.LEFT)
-        port_combo = ttk.Combobox(row, textvariable=port_var, state="normal", width=20)
+        port_combo = ttk.Combobox(row, textvariable=port_var, state="normal", width=42)
         port_combo.pack(side=tk.LEFT, padx=(6, 6))
         port_combo.bind("<<ComboboxSelected>>", lambda _event, key=side: self._on_port_changed(key))
         port_combo.bind("<FocusOut>", lambda _event, key=side: self._on_port_changed(key))
@@ -289,22 +290,24 @@ class BridgeApp:
     def refresh_ports(self) -> None:
         ports = SerialBridgeSession.list_ports()
         self._port_map = {port.device: port for port in ports}
-        self._port_options = [port.device for port in ports]
+        self._port_label_to_device = {port.dropdown_label(): port.device for port in ports}
+        self._port_options = [port.dropdown_label() for port in ports]
         for side, widgets in self._side_widgets.items():
             widgets.port_combo["values"] = self._port_options
+            self._sync_port_var_from_device(side)
             self._update_port_detail(side)
         if ports:
-            self.summary_var.set("Detected ports: " + ", ".join(self._port_options))
+            self.summary_var.set("Detected ports: " + ", ".join(port.device for port in ports))
         else:
             self.summary_var.set("No serial ports detected")
 
     def open_session(self, side: str) -> None:
-        widgets = self._side_widgets[side]
-        port = widgets.port_var.get().strip()
+        port = self._resolve_selected_port(side)
         if not port:
             messagebox.showinfo("Port required", f"Select a COM port for the {side} board first.")
             return
-        self._on_port_changed(side)
+        self.sessions[side].info.port = port
+        self._sync_port_var_from_device(side)
         if self.sessions[side].open(port):
             if side == "phone":
                 self.apply_phone_flags()
@@ -376,15 +379,37 @@ class BridgeApp:
             return
         self._side_widgets[side].preferred_var.set(device.address)
 
+    def _resolve_selected_port(self, side: str) -> str:
+        raw_value = self._side_widgets[side].port_var.get().strip()
+        if raw_value in self._port_label_to_device:
+            return self._port_label_to_device[raw_value]
+        if raw_value in self._port_map:
+            return raw_value
+        if "|" in raw_value:
+            candidate = raw_value.split("|", 1)[0].strip()
+            if candidate in self._port_map:
+                return candidate
+        return raw_value
+
+    def _sync_port_var_from_device(self, side: str) -> None:
+        widgets = self._side_widgets[side]
+        device_name = self.sessions[side].info.port.strip()
+        port = self._port_map.get(device_name)
+        if port is not None:
+            widgets.port_var.set(port.dropdown_label())
+        elif device_name:
+            widgets.port_var.set(device_name)
+
     def _on_port_changed(self, side: str) -> None:
-        value = self._side_widgets[side].port_var.get().strip()
-        self.sessions[side].info.port = value
+        resolved = self._resolve_selected_port(side)
+        self.sessions[side].info.port = resolved
+        self._sync_port_var_from_device(side)
         self._update_port_detail(side)
         self._save_state()
 
     def _update_port_detail(self, side: str) -> None:
         widgets = self._side_widgets[side]
-        port_name = widgets.port_var.get().strip()
+        port_name = self.sessions[side].info.port.strip() or self._resolve_selected_port(side)
         port = self._port_map.get(port_name)
         if port is None:
             widgets.port_detail_var.set("USB details unavailable. Refresh ports or choose a detected COM port.\nControl link: WICED HCI over USB serial")
@@ -458,6 +483,7 @@ class BridgeApp:
         info = session.info
         widgets = self._side_widgets[side]
 
+        self._sync_port_var_from_device(side)
         widgets.identity_var.set(info.bridge_identity or "<waiting>")
         widgets.bda_var.set(info.local_bda or "<unknown>")
         widgets.version_var.set(info.sdk_version or "<unknown>")

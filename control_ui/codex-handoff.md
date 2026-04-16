@@ -1,31 +1,29 @@
 ﻿# Codex Handoff
 
 ## What Changed
-- The serial close path was tightened to reduce cases where a COM port stays held after the user closes a board session.
-- `session.py` now cancels pending reads and writes, closes the serial object, joins background worker threads, and clears buffers before reporting the port as closed.
-- `ui.py` now refreshes the COM-port list after close and includes a per-side `Refresh` button next to each port selector in addition to the top-level refresh control.
+- The COM-port selector now shows richer labels directly in the dropdown instead of only raw `COMx` names.
+- `session.py` now builds a dropdown label that includes the port, product or description, manufacturer hint, and `WICED HCI` role hint.
+- `ui.py` now keeps a mapping between the human-readable dropdown labels and the underlying COM-port device name so the UI stays readable without breaking open or close behavior.
 
 ## Current Operator Flow
-- Choose a COM port and review the USB/HCI details shown under the port selector.
+- Use the per-side port dropdown and look for labels such as:
+  - `COM7 | KitProg3 USB-UART | Infineon | WICED HCI`
+- Choose a port from the richer dropdown label list.
+- The UI resolves that display label back to the actual `COMx` device when opening the board session.
+- The detailed panel below the selector still shows the full USB metadata for the currently selected port.
 - Use the per-side `Refresh` button or the top-level `Refresh Ports` control to rescan devices.
-- Open the phone-side serial session.
-  - The phone-side UI keeps `Visible to phone` and `Pairable` enabled by default.
-  - Opening the phone-side session applies those flags automatically.
-- Open the car-side serial session.
-  - Use `Connect Previous` to remove the old bond, create a fresh bond, and reconnect AG, A2DP source, and AVRCP target for the saved car-side peer.
-- Close a session when done and expect the UI to release the COM port and refresh the detected-port list.
 
 ## Validation Completed
 - `python -m py_compile` passed.
-- Tkinter smoke test passed:
-  - `BridgeApp` constructs successfully.
+- Tkinter smoke test passed.
 - Explicit close-path smoke test passed for both side sessions.
+- Dropdown-label UI smoke test passed after switching the selector to rich labels.
 - Readable AT-command decoding sanity check passed.
 
 ## Practical Next Actions
-- Test both boards on real COM ports and verify repeated open/close cycles leave the ports immediately reusable.
-- If Windows still occasionally holds a port, capture the exact sequence and timing so the shutdown path can be tuned further.
-- Validate the AG `Connect Previous` timing against the real car-side reconnect flow.
+- Test with the real boards attached and confirm the dropdown labels make it obvious which USB serial device is the HCI control port.
+- If the label text is too long or still not distinctive enough, adjust `SerialPortInfo.dropdown_label()` in `src/control_ui_app/session.py`.
+- Continue validating repeated open or close cycles and AG `Connect Previous` on hardware.
 - After each meaningful completed change, commit from `C:\BT_Projects`.
 
 ## Files To Read First Next Time
@@ -33,10 +31,9 @@
 - `project_status.md`
 - `README.md`
 - `docs/bridge_spec.md`
-- `src/control_ui_app/hci.py`
 - `src/control_ui_app/session.py`
 - `src/control_ui_app/ui.py`
 
 ## Notes
-- The current AG one-step reconnect is intentionally pragmatic: disconnect, unbond, bond, then reconnect service profiles.
 - The UI is still a control and trace tool, not the final end-to-end bridge translator.
+- The dropdown-label mapping is intentionally separate from the saved device name so persisted state keeps using the stable `COMx` value.
