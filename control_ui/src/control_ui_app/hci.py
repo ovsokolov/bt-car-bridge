@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -14,6 +14,18 @@ GROUP_AG = 0x0E
 GROUP_AVRC_CONTROLLER = 0x11
 GROUP_AUDIO_SINK = 0x14
 GROUP_MISC = 0xFF
+
+
+GROUP_NAMES = {
+    GROUP_DEVICE: "Device",
+    GROUP_HF: "Hands-Free",
+    GROUP_AUDIO: "A2DP Source",
+    GROUP_AVRC_TARGET: "AVRCP Target",
+    GROUP_AG: "Audio Gateway",
+    GROUP_AVRC_CONTROLLER: "AVRCP Controller",
+    GROUP_AUDIO_SINK: "A2DP Sink",
+    GROUP_MISC: "Misc",
+}
 
 
 def opcode(group: int, code: int) -> int:
@@ -79,6 +91,7 @@ EVENT_USER_CONFIRMATION = opcode(GROUP_DEVICE, 0x0B)
 EVENT_CONNECTED_DEVICE_NAME = opcode(GROUP_DEVICE, 0x0A)
 EVENT_PIN_REQUEST = opcode(GROUP_DEVICE, 0x12)
 EVENT_READ_LOCAL_BDA = opcode(GROUP_DEVICE, 0x0D)
+EVENT_CONNECTION_STATUS = opcode(GROUP_DEVICE, 0x11)
 
 EVENT_MISC_VERSION = opcode(GROUP_MISC, 0x02)
 EVENT_MISC_BRIDGE_IDENTITY = opcode(GROUP_MISC, 0x03)
@@ -87,9 +100,10 @@ EVENT_MISC_BRIDGE_IDENTITY = opcode(GROUP_MISC, 0x03)
 SUPPORTED_GROUP_NAMES = {
     GROUP_HF: "HF",
     GROUP_AG: "AG",
-    GROUP_AUDIO: "A2DP Audio",
-    GROUP_AVRC_CONTROLLER: "AVRCP CT",
-    GROUP_AVRC_TARGET: "AVRCP TG",
+    GROUP_AUDIO: "A2DP Source",
+    GROUP_AVRC_CONTROLLER: "AVRCP Controller",
+    GROUP_AVRC_TARGET: "AVRCP Target",
+    GROUP_AUDIO_SINK: "A2DP Sink",
 }
 
 STATUS_NAMES = {
@@ -155,15 +169,15 @@ RX_OPCODE_NAMES = {
     EVENT_READ_LOCAL_BDA: "Read Local BDA",
     EVENT_MISC_VERSION: "Version",
     EVENT_MISC_BRIDGE_IDENTITY: "Bridge Identity",
-    opcode(GROUP_DEVICE, 0x01): "Command Status",
-    opcode(GROUP_DEVICE, 0x11): "Connection Status",
-    opcode(GROUP_HF, 0x03): "HF Connected",
+    EVENT_COMMAND_STATUS: "Command Status",
+    EVENT_CONNECTION_STATUS: "Connection Status",
+    opcode(GROUP_HF, 0x03): "HF Service Connected",
     opcode(GROUP_HF, 0x04): "HF Service Disconnected",
     opcode(GROUP_HF, 0x05): "HF Audio Connected",
     opcode(GROUP_HF, 0x06): "HF Audio Disconnected",
-    opcode(GROUP_AG, 0x01): "AG Open",
-    opcode(GROUP_AG, 0x02): "AG Close",
-    opcode(GROUP_AG, 0x03): "AG Connected",
+    opcode(GROUP_AG, 0x01): "AG Service Open",
+    opcode(GROUP_AG, 0x02): "AG Service Close",
+    opcode(GROUP_AG, 0x03): "AG Service Connected",
     opcode(GROUP_AG, 0x04): "AG Audio Open",
     opcode(GROUP_AG, 0x05): "AG Audio Close",
     opcode(GROUP_AG, 0x06): "AG AT Command",
@@ -277,11 +291,48 @@ def encode_pin_reply(raw_bda: bytes, pin: str) -> bytes:
 
 
 def tx_opcode_name(opcode_value: int) -> str:
-    return TX_OPCODE_NAMES.get(opcode_value, f"0x{opcode_value:04X}")
+    return TX_OPCODE_NAMES.get(opcode_value, f"Command 0x{opcode_value:04X}")
 
 
 def rx_opcode_name(opcode_value: int) -> str:
-    return RX_OPCODE_NAMES.get(opcode_value, f"0x{opcode_value:04X}")
+    return RX_OPCODE_NAMES.get(opcode_value, f"Event 0x{opcode_value:04X}")
+
+
+def _ascii_text(payload: bytes) -> str:
+    text = payload.decode("utf-8", errors="ignore")
+    text = text.replace("\r", " ").replace("\n", " ").replace("\x00", " ")
+    return " ".join(text.split())
+
+
+def _find_at_text(payload: bytes) -> str:
+    text = _ascii_text(payload)
+    at_index = text.find("AT")
+    return text[at_index:] if at_index >= 0 else text
+
+
+def _handle_text(payload: bytes) -> str:
+    if len(payload) >= 2:
+        handle = payload[0] | (payload[1] << 8)
+        return str(handle)
+    return "unknown"
+
+
+def _status_name(code: int) -> str:
+    return STATUS_NAMES.get(code, f"Status {code}")
+
+
+def _codec_name(codec_id: int) -> str:
+    return {
+        0: "SBC",
+        1: "AAC",
+        2: "APT-X",
+        3: "APT-X HD",
+        4: "LDAC",
+    }.get(codec_id, f"Codec {codec_id}")
+
+
+def tx_profile_name(opcode_value: int) -> str:
+    return TX_OPCODE_NAMES.get(opcode_value, tx_opcode_name(opcode_value))
 
 
 def decode_tx_message(opcode_value: int, payload: bytes) -> str:
@@ -297,62 +348,72 @@ def decode_tx_message(opcode_value: int, payload: bytes) -> str:
         COMMAND_UNBOND,
         COMMAND_UNBOND_DEVICE,
     } and len(payload) >= 6:
-        return f"Sent {name} to {bd_addr_to_display(reversed(payload[:6]))}"
+        return f"{name} to {bd_addr_to_display(reversed(payload[:6]))}"
     if opcode_value == COMMAND_SET_PAIRING_MODE and payload:
-        return f"Sent Set Pairing Mode: {'On' if payload[0] else 'Off'}"
+        return f"Pairable mode {'enabled' if payload[0] else 'disabled'}"
     if opcode_value == COMMAND_SET_VISIBILITY and len(payload) >= 2:
-        return f"Sent Set Visibility: discoverable={'On' if payload[0] else 'Off'}, connectable={'On' if payload[1] else 'Off'}"
+        return (
+            "Visibility set: "
+            f"discoverable={'yes' if payload[0] else 'no'}, connectable={'yes' if payload[1] else 'no'}"
+        )
     if opcode_value == COMMAND_INQUIRY and payload:
-        return f"Sent Inquiry: {'Start' if payload[0] else 'Stop'}"
+        return f"Inquiry {'started' if payload[0] else 'stopped'}"
     if opcode_value == COMMAND_USER_CONFIRMATION and len(payload) >= 7:
-        return f"Sent User Confirmation Reply: {'Accept' if payload[6] else 'Reject'}"
+        return f"Numeric comparison {'accepted' if payload[6] else 'rejected'}"
     if opcode_value == COMMAND_PIN_REPLY and len(payload) >= 7:
-        return f"Sent PIN Reply ({payload[6]} digits)"
-    return f"Sent {name}"
+        return f"PIN reply sent ({payload[6]} digits)"
+    return name
 
 
 def decode_rx_message(opcode_value: int, payload: bytes) -> str:
     name = rx_opcode_name(opcode_value)
     if opcode_value == EVENT_DEVICE_STARTED:
-        return "Device started"
+        return "Board booted and HCI control is ready"
     if opcode_value == EVENT_MISC_VERSION:
         version, chip, groups = parse_version_payload(payload)
-        group_names = ", ".join(SUPPORTED_GROUP_NAMES.get(group, f"0x{group:02X}") for group in groups)
-        return f"Version {version}, chip {chip}, groups: {group_names}"
+        group_names = ", ".join(SUPPORTED_GROUP_NAMES.get(group, f"Group {group}") for group in groups)
+        return f"Firmware version {version}, chip {chip}, supported groups: {group_names or 'none reported'}"
     if opcode_value == EVENT_MISC_BRIDGE_IDENTITY:
         identity = payload.decode("utf-8", errors="ignore").strip("\x00")
-        return f"Bridge identity: {identity}"
+        return f"Board identity is {identity}"
     if opcode_value == EVENT_READ_LOCAL_BDA and len(payload) >= 6:
-        return f"Local BDA: {bd_addr_to_display(payload[:6])}"
+        return f"Local Bluetooth address: {bd_addr_to_display(payload[:6])}"
     if opcode_value == opcode(GROUP_DEVICE, 0x04):
-        return f"NVRAM data request (len={len(payload)})"
+        return f"Firmware requested NVRAM data ({len(payload)} bytes)"
     if opcode_value == opcode(GROUP_DEVICE, 0x09) and len(payload) >= 7:
-        return f"Encryption changed: {'On' if payload[0] else 'Off'} for {bd_addr_to_display(payload[1:7])}"
-    if opcode_value == opcode(GROUP_DEVICE, 0x01) and payload:
-        return f"Command status: {STATUS_NAMES.get(payload[0], f'0x{payload[0]:02X}')}"
+        return f"Link encryption {'enabled' if payload[0] else 'disabled'} for {bd_addr_to_display(payload[1:7])}"
+    if opcode_value == EVENT_COMMAND_STATUS and payload:
+        return f"Last command result: {_status_name(payload[0])}"
     if opcode_value == EVENT_PAIRING_COMPLETE and payload:
-        return f"Pairing complete: {STATUS_NAMES.get(payload[0], f'0x{payload[0]:02X}')}"
+        return f"Pairing completed with result: {_status_name(payload[0])}"
     if opcode_value == EVENT_USER_CONFIRMATION and len(payload) >= 10:
         numeric_value = payload[6] | (payload[7] << 8) | (payload[8] << 16) | (payload[9] << 24)
         return f"Numeric comparison requested: {numeric_value}"
     if opcode_value == EVENT_PIN_REQUEST and len(payload) >= 6:
-        return f"PIN requested for {bd_addr_to_display(payload[:6])}"
+        return f"PIN code requested for {bd_addr_to_display(payload[:6])}"
     if opcode_value == EVENT_INQUIRY_COMPLETE:
-        return "Inquiry complete"
+        return "Device search completed"
     if opcode_value == EVENT_INQUIRY_RESULT and len(payload) >= 10:
         addr = bd_addr_to_display(reversed(payload[:6]))
         rssi = payload[9] if payload[9] < 128 else payload[9] - 256
-        name_text = decode_eir_name(payload[10:]) or "<unknown>"
-        return f"Discovered {name_text} [{addr}] RSSI={rssi}"
+        name_text = decode_eir_name(payload[10:]) or "Unnamed device"
+        return f"Found {name_text} at {addr} with RSSI {rssi}"
+    if opcode_value == EVENT_CONNECTION_STATUS:
+        text = _ascii_text(payload)
+        return f"Connection status update: {text}" if text else "Connection status update received"
+    if opcode_value == EVENT_AG_AT_CMD:
+        at_text = _find_at_text(payload)
+        return f"Phone AT command: {at_text or 'received'}"
     if opcode_value in {
         opcode(GROUP_HF, 0x03),
         opcode(GROUP_HF, 0x04),
         opcode(GROUP_HF, 0x05),
         opcode(GROUP_HF, 0x06),
+        opcode(GROUP_AG, 0x01),
+        opcode(GROUP_AG, 0x02),
         opcode(GROUP_AG, 0x03),
         opcode(GROUP_AG, 0x04),
         opcode(GROUP_AG, 0x05),
-        opcode(GROUP_AG, 0x06),
         opcode(GROUP_AVRC_CONTROLLER, 0x01),
         opcode(GROUP_AVRC_CONTROLLER, 0x02),
         opcode(GROUP_AVRC_TARGET, 0x01),
@@ -364,10 +425,7 @@ def decode_rx_message(opcode_value: int, payload: bytes) -> str:
         opcode(GROUP_AUDIO_SINK, 0x04),
         opcode(GROUP_AUDIO_SINK, 0x05),
     }:
-        if len(payload) >= 2:
-            handle = payload[0] | (payload[1] << 8)
-            return f"{name} (handle 0x{handle:04X})"
-        return name
+        return f"{name} on handle {_handle_text(payload)}"
     if opcode_value in {
         opcode(GROUP_AVRC_TARGET, 0x03),
         opcode(GROUP_AVRC_TARGET, 0x04),
@@ -382,5 +440,17 @@ def decode_rx_message(opcode_value: int, payload: bytes) -> str:
         opcode(GROUP_AVRC_CONTROLLER, 0xFF),
         opcode(GROUP_AVRC_TARGET, 0xFF),
     } and payload:
-        return f"{name}: {STATUS_NAMES.get(payload[0], f'0x{payload[0]:02X}')}"
-    return f"Received {name} (len={len(payload)})"
+        return f"{name}: {_status_name(payload[0])}"
+    if opcode_value == opcode(GROUP_AUDIO_SINK, 0x08) and payload:
+        return f"A2DP sink codec configured: {_codec_name(payload[0])}"
+    if opcode_value == opcode(GROUP_AUDIO_SINK, 0x09):
+        return "A2DP sink start requested"
+    if opcode_value == opcode(GROUP_AUDIO_SINK, 0x0B):
+        return "A2DP sink stream suspended"
+    if opcode_value == opcode(GROUP_AVRC_TARGET, 0x0C) and payload:
+        percent = round((payload[0] / 127) * 100)
+        return f"AVRCP volume updated to about {percent}%"
+    text = _ascii_text(payload)
+    if text:
+        return f"{name}: {text}"
+    return f"{name} received ({len(payload)} bytes)"

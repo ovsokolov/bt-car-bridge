@@ -1,47 +1,32 @@
 ﻿# Codex Handoff
 
-## What Happened
-- `main.py` was still readable, but imports failed because `src/control_ui_app/ui.py` contained NUL bytes.
-- Further inspection showed `src/control_ui_app/session.py`, `project_status.md`, and `codex-handoff.md` were also NUL-filled.
-- The surviving docs (`AGENT.md`, `README.md`, and `docs/bridge_spec.md`) plus intact modules (`hci.py`, `models.py`, `storage.py`) were used to rebuild the control app scaffold.
+## What Changed
+- The control UI was extended beyond the initial rebuild to improve bring-up workflow and readability.
+- `hci.py` now produces more operator-friendly log text, especially for AT commands and common profile events.
+- `session.py` now exposes richer COM-port metadata and adds a one-step AG reconnect sequence for the remembered remote device.
+- `ui.py` now shows COM-port details, adds default-on HF visibility and pairable checkboxes on the phone side, and adds a `Connect Previous` action on the car side.
 
-## Current Understanding
-- This repo is the host-side bridge-control workspace for the NavTool dual-devkit system.
-- The UI must manage two USB serial links at once:
-  - `NavTool-PhoneConnect`
-  - `NavTool-CarConnect`
-- The host app is responsible for connection management, event visibility, operator actions, and trace logging.
-- Audio remains off-UART; the app only manages the control plane.
-
-## Rebuilt App Behavior
-- `session.py` now owns serial open/close, WICED HCI framing, command send helpers, packet parsing, and session-state updates.
-- `ui.py` now provides a Tkinter operator panel with:
-  - separate phone-side and car-side control panes
-  - COM-port selection and open/close controls
-  - board identity, BD_ADDR, version, and feature-group display
-  - discovery lists with saved preferred peers
-  - inquiry, visibility, pairability, bond, and unbond controls
-  - HF, AG, A2DP, and AVRCP command buttons
-  - per-side trace logs and a unified bridge trace
-  - numeric-comparison and PIN prompts
-- `bridge_state.json` persistence remains active through `storage.py`.
+## Current Operator Flow
+- Choose a COM port and review the USB/HCI details shown under the port selector.
+- Open the phone-side serial session.
+  - The phone-side UI keeps `Visible to phone` and `Pairable` enabled by default.
+  - Opening the phone-side session applies those flags automatically.
+- Open the car-side serial session.
+  - Use `Connect Previous` to remove the old bond, create a fresh bond, and reconnect AG, A2DP source, and AVRCP target for the saved car-side peer.
+- Use the unified trace and per-side trace logs for readable event monitoring rather than raw hex-oriented output.
 
 ## Validation Completed
-- `python -m py_compile` passed for the rebuilt package.
-- Direct import check passed:
-  - `import control_ui_app.ui`
-  - `import control_ui_app.session`
+- `python -m py_compile` passed.
+- Tkinter smoke test passed:
+  - `BridgeApp` constructs successfully.
+- Readable AT-command decoding sanity check passed.
 
 ## Practical Next Actions
-- Run `python main.py` from `C:\BT_Projects\control_ui`.
-- Verify each board reports the correct identity on the expected COM port.
-- Test these operator flows on both boards:
-  - inquiry start and stop
-  - pairable and visibility toggles
-  - numeric comparison and PIN prompts
-  - preferred-peer reconnect
-  - HF, AG, A2DP, and AVRCP command bring-up
-- If the user wants deeper bridge automation next, extend the session event handling rather than rebuilding transport again.
+- Test both boards on real COM ports and verify the USB/HCI details shown in the UI match the expected devices.
+- Confirm the phone-side board remains visible and pairable by default after opening.
+- Validate the AG `Connect Previous` timing against the real car-side reconnect flow.
+- If reconnect timing is off, tune the waits in `SerialBridgeSession._run_ag_connect_previous()`.
+- If deeper protocol visibility is needed, continue improving `decode_rx_message()` in `hci.py` rather than adding hex dumps back into the main trace.
 - After each meaningful completed change, commit from `C:\BT_Projects`.
 
 ## Files To Read First Next Time
@@ -49,9 +34,10 @@
 - `project_status.md`
 - `README.md`
 - `docs/bridge_spec.md`
+- `src/control_ui_app/hci.py`
 - `src/control_ui_app/session.py`
 - `src/control_ui_app/ui.py`
 
 ## Notes
-- `hci.py`, `models.py`, and `storage.py` were still usable during recovery and should remain the local protocol/state references.
-- The current UI is intended for board management, event tracing, and bring-up; it is not yet the final end-to-end bridge translator.
+- The current AG one-step reconnect is intentionally pragmatic: disconnect, unbond, bond, then reconnect service profiles.
+- The UI is still a control and trace tool, not the final end-to-end bridge translator.

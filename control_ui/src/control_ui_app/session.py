@@ -79,6 +79,35 @@ EventSink = Callable[[str, dict], None]
 class SerialPortInfo:
     device: str
     description: str
+    manufacturer: str = ""
+    product: str = ""
+    serial_number: str = ""
+    hwid: str = ""
+    vid: Optional[int] = None
+    pid: Optional[int] = None
+    interface: str = ""
+
+    def short_label(self) -> str:
+        return f"{self.device} - {self.description or 'Serial device'}"
+
+    def detail_lines(self) -> list[str]:
+        lines = [f"Port: {self.device}"]
+        if self.description:
+            lines.append(f"Description: {self.description}")
+        if self.product:
+            lines.append(f"Product: {self.product}")
+        if self.manufacturer:
+            lines.append(f"Manufacturer: {self.manufacturer}")
+        if self.serial_number:
+            lines.append(f"USB Serial: {self.serial_number}")
+        if self.vid is not None and self.pid is not None:
+            lines.append(f"VID:PID: {self.vid:04X}:{self.pid:04X}")
+        if self.interface:
+            lines.append(f"Interface: {self.interface}")
+        if self.hwid:
+            lines.append(f"HWID: {self.hwid}")
+        lines.append("Control link: WICED HCI over USB serial")
+        return lines
 
 
 class SerialBridgeSession:
@@ -87,9 +116,11 @@ class SerialBridgeSession:
         self._event_sink = event_sink
         self._serial: Optional[serial.Serial] = None if serial else None
         self._reader_thread: Optional[threading.Thread] = None
+        self._sequence_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._buffer = bytearray()
         self._lock = threading.Lock()
+        self._close_lock = threading.Lock()
         self._last_command_at = 0.0
 
     @staticmethod
@@ -102,8 +133,19 @@ class SerialBridgeSession:
             return []
         ports = []
         for port in list_ports.comports():
-            description = port.description or port.device
-            ports.append(SerialPortInfo(device=port.device, description=description))
+            ports.append(
+                SerialPortInfo(
+                    device=port.device,
+                    description=port.description or port.device,
+                    manufacturer=getattr(port, "manufacturer", "") or "",
+                    product=getattr(port, "product", "") or "",
+                    serial_number=getattr(port, "serial_number", "") or "",
+                    hwid=getattr(port, "hwid", "") or "",
+                    vid=getattr(port, "vid", None),
+                    pid=getattr(port, "pid", None),
+                    interface=getattr(port, "interface", "") or "",
+                )
+            )
         return sorted(ports, key=lambda item: item.device)
 
     def open(self, port: str, baud_rate: Optional[int] = None) -> bool:
@@ -140,27 +182,30 @@ class SerialBridgeSession:
         self._reader_thread = threading.Thread(target=self._reader_loop, name=f"serial-{self.info.label}", daemon=True)
         self._reader_thread.start()
         self._emit("state", status=self.info.last_status)
-        self._log(self.info.last_status)
+        self._log(f"Opened serial link on {self.info.port}")
         self.request_version()
         self.request_local_bda()
         return True
 
     def close(self) -> None:
-        self._stop_event.set()
-        serial_port = self._serial
-        self._serial = None
-        if serial_port is not None:
-            try:
-                serial_port.close()
-            except Exception:
-                pass
-        self.info.is_open = False
-        self.info.ag_connected = False
-        self.info.avrc_connected = False
-        self.info.a2dp_connected = False
-        self.info.last_status = "Closed"
-        self._emit("state", status=self.info.last_status)
-        self._log("Closed serial session")
+        with self._close_lock:
+            already_closed = not self.info.is_open and self._serial is None
+            self._stop_event.set()
+            serial_port = self._serial
+            self._serial = None
+            if serial_port is not None:
+                try:
+                    serial_port.close()
+                except Exception:
+                    pass
+            self.info.is_open = False
+            self.info.ag_connected = False
+            self.info.avrc_connected = False
+            self.info.a2dp_connected = False
+            self.info.last_status = "Closed"
+            self._emit("state", status=self.info.last_status)
+            if not already_closed:
+                self._log("Closed serial session")
 
     def request_version(self) -> None:
         self.send(COMMAND_GET_VERSION)
@@ -179,6 +224,13 @@ class SerialBridgeSession:
 
     def set_pairing_mode(self, enabled: bool) -> None:
         self.send(COMMAND_SET_PAIRING_MODE, bytes([1 if enabled else 0]))
+
+    def apply_pairable_visibility(self, pairable: bool, visible: bool) -> None:
+        self.set_pairing_mode(pairable)
+        self.set_visibility(visible, visible)
+        self._log(
+            f"Applied board visibility settings: pairable={'yes' if pairable else 'no'}, visible={'yes' if visible else 'no'}"
+        )
 
     def bond(self, address: str) -> None:
         self._remember_remote(address)
@@ -276,9 +328,50 @@ class SerialBridgeSession:
             self.a2dp_source_connect(address)
             self.avrc_tg_connect(address)
 
+    def connect_previous_ag(self) -> None:
+        address = self.info.preferred_remote_address.strip()
+        if not address:
+            self._log("No previous car-side address is saved")
+            return
+        if not self.info.is_open:
+            self._log("Open the car-side serial session before starting one-step connect")
+            return
+        if self._sequence_thread is not None and self._sequence_thread.is_alive():
+            self._log("AG one-step connect is already running")
+            return
+        self._sequence_thread = threading.Thread(
+            target=self._run_ag_connect_previous,
+            args=(address,),
+            name=f"ag-connect-{self.info.label}",
+            daemon=True,
+        )
+        self._sequence_thread.start()
+
+    def _run_ag_connect_previous(self, address: str) -> None:
+        steps: list[tuple[str, Callable[[], None], float]] = [
+            ("Disconnecting old AG service link", self.ag_disconnect, 0.6),
+            ("Disconnecting old A2DP source link", self.a2dp_source_disconnect, 0.6),
+            ("Disconnecting old AVRCP target link", self.avrc_tg_disconnect, 0.6),
+            (f"Removing old bond for {address}", lambda: self.unbond(address), 1.0),
+            (f"Creating fresh bond with {address}", lambda: self.bond(address), 1.6),
+            (f"Connecting AG profile to {address}", lambda: self.ag_connect(address), 0.8),
+            (f"Connecting A2DP source profile to {address}", lambda: self.a2dp_source_connect(address), 0.8),
+            (f"Connecting AVRCP target profile to {address}", lambda: self.avrc_tg_connect(address), 0.8),
+        ]
+        self._remember_remote(address)
+        self._log(f"Starting AG one-step reconnect for {address}")
+        for label, action, wait_seconds in steps:
+            if self._stop_event.is_set() or not self.info.is_open:
+                self._log("AG one-step reconnect stopped because the session was closed")
+                return
+            self._log(label)
+            action()
+            time.sleep(wait_seconds)
+        self._log("AG one-step reconnect finished")
+
     def send(self, opcode_value: int, payload: bytes = b"") -> bool:
         if not self.info.is_open or self._serial is None:
-            self._log("Cannot send command while serial port is closed")
+            self._log("Cannot send a command while the serial port is closed")
             return False
         packet = encode_wiced_command(opcode_value, payload)
         try:
@@ -322,13 +415,16 @@ class SerialBridgeSession:
         if packet.opcode == EVENT_DEVICE_STARTED:
             self.request_version()
             self.request_local_bda()
+            self.info.last_status = "Board started"
         elif packet.opcode == EVENT_MISC_VERSION:
             version, chip, groups = parse_version_payload(packet.payload)
             self.info.sdk_version = version
             self.info.chip = chip
             self.info.supported_groups = groups
+            self.info.last_status = "Firmware info received"
         elif packet.opcode == EVENT_MISC_BRIDGE_IDENTITY:
             self.info.bridge_identity = packet.payload.decode("utf-8", errors="ignore").strip("\x00")
+            self.info.last_status = f"Identity detected: {self.info.bridge_identity}"
         elif packet.opcode == EVENT_READ_LOCAL_BDA and len(packet.payload) >= 6:
             self.info.local_bda = bd_addr_to_display(packet.payload[:6])
         elif packet.opcode == EVENT_INQUIRY_RESULT and len(packet.payload) >= 10:
@@ -364,20 +460,28 @@ class SerialBridgeSession:
             )
         elif packet.opcode == opcode(0x03, 0x03):
             self.info.ag_connected = True
+            self.info.last_status = "HF service connected"
         elif packet.opcode == opcode(0x03, 0x04):
             self.info.ag_connected = False
+            self.info.last_status = "HF service disconnected"
         elif packet.opcode == opcode(0x0E, 0x03):
             self.info.ag_connected = True
+            self.info.last_status = "AG service connected"
         elif packet.opcode == opcode(0x0E, 0x02):
             self.info.ag_connected = False
+            self.info.last_status = "AG service disconnected"
         elif packet.opcode in {opcode(0x11, 0x01), opcode(0x07, 0x01)}:
             self.info.avrc_connected = True
+            self.info.last_status = "AVRCP connected"
         elif packet.opcode in {opcode(0x11, 0x02), opcode(0x07, 0x02)}:
             self.info.avrc_connected = False
+            self.info.last_status = "AVRCP disconnected"
         elif packet.opcode in {opcode(0x05, 0x02), opcode(0x14, 0x02)}:
             self.info.a2dp_connected = True
+            self.info.last_status = "A2DP connected"
         elif packet.opcode in {opcode(0x05, 0x05), opcode(0x14, 0x05)}:
             self.info.a2dp_connected = False
+            self.info.last_status = "A2DP disconnected"
         elif packet.opcode == EVENT_PAIRING_COMPLETE and packet.payload:
             self.info.last_status = f"Pairing result: {packet.payload[0]}"
         elif packet.opcode == EVENT_INQUIRY_COMPLETE:

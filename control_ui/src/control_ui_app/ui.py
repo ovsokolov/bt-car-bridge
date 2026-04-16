@@ -5,10 +5,10 @@ from datetime import datetime
 from queue import Empty, Queue
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
-from typing import Callable
+from typing import Callable, Optional
 
 from .models import BridgeState, RemoteDevice
-from .session import SERIAL_IMPORT_ERROR, SerialBridgeSession
+from .session import SERIAL_IMPORT_ERROR, SerialBridgeSession, SerialPortInfo
 from .storage import apply_saved_state, save_state
 
 
@@ -17,20 +17,29 @@ EXPECTED_IDENTITIES = {
     "car": "NavTool-CarConnect",
 }
 
+SIDE_ROLE_HINTS = {
+    "phone": "HF side: board should stay visible and pairable to the phone",
+    "car": "AG side: board reconnects to the remembered car device",
+}
+
 
 @dataclass
 class SideWidgets:
     port_var: tk.StringVar
+    port_detail_var: tk.StringVar
     status_var: tk.StringVar
     identity_var: tk.StringVar
     bda_var: tk.StringVar
     version_var: tk.StringVar
     groups_var: tk.StringVar
     preferred_var: tk.StringVar
+    pairable_var: Optional[tk.BooleanVar]
+    visible_var: Optional[tk.BooleanVar]
     listbox: tk.Listbox
     log_text: tk.Text
     open_button: ttk.Button
     close_button: ttk.Button
+    port_combo: ttk.Combobox
     devices: list[str]
 
 
@@ -38,13 +47,14 @@ class BridgeApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("NavTool Bridge Control")
-        self.root.geometry("1480x900")
+        self.root.geometry("1540x940")
 
         self.state = BridgeState()
         apply_saved_state(self.state)
 
         self._event_queue: Queue[tuple[str, str, dict]] = Queue()
         self._port_options: list[str] = []
+        self._port_map: dict[str, SerialPortInfo] = {}
         self._side_widgets: dict[str, SideWidgets] = {}
 
         self.phone_session = SerialBridgeSession(self.state.phone_session, self._make_event_sink("phone"))
@@ -104,17 +114,20 @@ class BridgeApp:
         frame.pack(fill=tk.BOTH, expand=True)
 
         port_var = tk.StringVar(value=info.port)
+        port_detail_var = tk.StringVar(value="Select a COM port to view USB/HCI details")
         status_var = tk.StringVar(value="Closed")
         identity_var = tk.StringVar(value="")
         bda_var = tk.StringVar(value="")
         version_var = tk.StringVar(value="")
         groups_var = tk.StringVar(value="")
         preferred_var = tk.StringVar(value=info.preferred_remote_address)
+        pairable_var = tk.BooleanVar(value=True) if side == "phone" else None
+        visible_var = tk.BooleanVar(value=True) if side == "phone" else None
 
         row = ttk.Frame(frame)
-        row.pack(fill=tk.X, pady=(0, 8))
+        row.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(row, text="Port").pack(side=tk.LEFT)
-        port_combo = ttk.Combobox(row, textvariable=port_var, state="normal", width=18)
+        port_combo = ttk.Combobox(row, textvariable=port_var, state="normal", width=20)
         port_combo.pack(side=tk.LEFT, padx=(6, 6))
         port_combo.bind("<<ComboboxSelected>>", lambda _event, key=side: self._on_port_changed(key))
         port_combo.bind("<FocusOut>", lambda _event, key=side: self._on_port_changed(key))
@@ -123,7 +136,19 @@ class BridgeApp:
         open_button.pack(side=tk.LEFT)
         close_button = ttk.Button(row, text="Close", command=lambda key=side: self.close_session(key))
         close_button.pack(side=tk.LEFT, padx=(6, 0))
-        ttk.Button(row, text="Reconnect Preferred", command=lambda key=side: self.reconnect_preferred(key)).pack(side=tk.LEFT, padx=(6, 0))
+        if side == "phone":
+            ttk.Button(row, text="Apply HF Flags", command=self.apply_phone_flags).pack(side=tk.LEFT, padx=(6, 0))
+        else:
+            ttk.Button(row, text="Connect Previous", command=self.connect_previous_car).pack(side=tk.LEFT, padx=(6, 0))
+            ttk.Button(row, text="Reconnect Preferred", command=lambda key=side: self.reconnect_preferred(key)).pack(side=tk.LEFT, padx=(6, 0))
+
+        hint_row = ttk.Frame(frame)
+        hint_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(hint_row, text=SIDE_ROLE_HINTS[side]).pack(side=tk.LEFT)
+
+        detail_row = ttk.Frame(frame)
+        detail_row.pack(fill=tk.X, pady=(0, 8))
+        ttk.Label(detail_row, textvariable=port_detail_var, justify=tk.LEFT, wraplength=680).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         status_frame = ttk.Frame(frame)
         status_frame.pack(fill=tk.X, pady=(0, 8))
@@ -135,10 +160,26 @@ class BridgeApp:
             ("Groups", groups_var),
             ("Status", status_var),
         ):
-            row = ttk.Frame(status_frame)
-            row.pack(fill=tk.X, pady=1)
-            ttk.Label(row, text=f"{label_text}:", width=10).pack(side=tk.LEFT)
-            ttk.Label(row, textvariable=var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            label_row = ttk.Frame(status_frame)
+            label_row.pack(fill=tk.X, pady=1)
+            ttk.Label(label_row, text=f"{label_text}:", width=10).pack(side=tk.LEFT)
+            ttk.Label(label_row, textvariable=var).pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        if side == "phone":
+            check_row = ttk.Frame(frame)
+            check_row.pack(fill=tk.X, pady=(0, 8))
+            ttk.Checkbutton(
+                check_row,
+                text="Visible to phone",
+                variable=visible_var,
+                command=self.apply_phone_flags,
+            ).pack(side=tk.LEFT)
+            ttk.Checkbutton(
+                check_row,
+                text="Pairable",
+                variable=pairable_var,
+                command=self.apply_phone_flags,
+            ).pack(side=tk.LEFT, padx=(10, 0))
 
         preferred_row = ttk.Frame(frame)
         preferred_row.pack(fill=tk.X, pady=(0, 8))
@@ -165,19 +206,19 @@ class BridgeApp:
         profile_actions = ttk.Frame(frame)
         profile_actions.pack(fill=tk.X, pady=(0, 8))
         for text, callback in (
-            ("Bond Selected", lambda key=side: self._with_selected_address(key, lambda session, address: session.bond(address))),
-            ("Unbond Selected", lambda key=side: self._with_selected_address(key, lambda session, address: session.unbond(address))),
-            ("HF Connect", lambda key=side: self._with_selected_address(key, lambda session, address: session.hf_connect(address))),
+            ("Bond Selected", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.bond(address))),
+            ("Unbond Selected", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.unbond(address))),
+            ("HF Connect", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.hf_connect(address))),
             ("HF Disconnect", lambda key=side: self.sessions[key].hf_disconnect()),
-            ("AG Connect", lambda key=side: self._with_selected_address(key, lambda session, address: session.ag_connect(address))),
+            ("AG Connect", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.ag_connect(address))),
             ("AG Disconnect", lambda key=side: self.sessions[key].ag_disconnect()),
-            ("A2DP Sink Conn", lambda key=side: self._with_selected_address(key, lambda session, address: session.a2dp_sink_connect(address))),
+            ("A2DP Sink Conn", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.a2dp_sink_connect(address))),
             ("A2DP Sink Disc", lambda key=side: self.sessions[key].a2dp_sink_disconnect()),
-            ("A2DP Src Conn", lambda key=side: self._with_selected_address(key, lambda session, address: session.a2dp_source_connect(address))),
+            ("A2DP Src Conn", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.a2dp_source_connect(address))),
             ("A2DP Src Disc", lambda key=side: self.sessions[key].a2dp_source_disconnect()),
-            ("AVRCP CT Conn", lambda key=side: self._with_selected_address(key, lambda session, address: session.avrc_ct_connect(address))),
+            ("AVRCP CT Conn", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.avrc_ct_connect(address))),
             ("AVRCP CT Disc", lambda key=side: self.sessions[key].avrc_ct_disconnect()),
-            ("AVRCP TG Conn", lambda key=side: self._with_selected_address(key, lambda session, address: session.avrc_tg_connect(address))),
+            ("AVRCP TG Conn", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.avrc_tg_connect(address))),
             ("AVRCP TG Disc", lambda key=side: self.sessions[key].avrc_tg_disconnect()),
         ):
             ttk.Button(profile_actions, text=text, command=callback).pack(side=tk.LEFT, padx=(0, 4), pady=2)
@@ -216,22 +257,24 @@ class BridgeApp:
         log_text.pack(fill=tk.BOTH, expand=True)
         log_text.configure(state=tk.DISABLED)
 
-        widgets = SideWidgets(
+        return SideWidgets(
             port_var=port_var,
+            port_detail_var=port_detail_var,
             status_var=status_var,
             identity_var=identity_var,
             bda_var=bda_var,
             version_var=version_var,
             groups_var=groups_var,
             preferred_var=preferred_var,
+            pairable_var=pairable_var,
+            visible_var=visible_var,
             listbox=listbox,
             log_text=log_text,
             open_button=open_button,
             close_button=close_button,
+            port_combo=port_combo,
             devices=[],
         )
-        widgets.port_combo = port_combo  # type: ignore[attr-defined]
-        return widgets
 
     def _make_event_sink(self, side: str) -> Callable[[str, dict], None]:
         def sink(kind: str, payload: dict) -> None:
@@ -240,9 +283,11 @@ class BridgeApp:
 
     def refresh_ports(self) -> None:
         ports = SerialBridgeSession.list_ports()
+        self._port_map = {port.device: port for port in ports}
         self._port_options = [port.device for port in ports]
-        for widgets in self._side_widgets.values():
-            widgets.port_combo["values"] = self._port_options  # type: ignore[attr-defined]
+        for side, widgets in self._side_widgets.items():
+            widgets.port_combo["values"] = self._port_options
+            self._update_port_detail(side)
         if ports:
             self.summary_var.set("Detected ports: " + ", ".join(self._port_options))
         else:
@@ -255,7 +300,9 @@ class BridgeApp:
             messagebox.showinfo("Port required", f"Select a COM port for the {side} board first.")
             return
         self._on_port_changed(side)
-        self.sessions[side].open(port)
+        if self.sessions[side].open(port):
+            if side == "phone":
+                self.apply_phone_flags()
         self._save_state()
 
     def close_session(self, side: str) -> None:
@@ -270,6 +317,23 @@ class BridgeApp:
     def reconnect_both(self) -> None:
         self.reconnect_preferred("phone")
         self.reconnect_preferred("car")
+
+    def connect_previous_car(self) -> None:
+        self._save_preferred_from_entry("car")
+        self.car_session.connect_previous_ag()
+        self._save_state()
+
+    def apply_phone_flags(self) -> None:
+        widgets = self._side_widgets["phone"]
+        pairable = widgets.pairable_var.get() if widgets.pairable_var is not None else True
+        visible = widgets.visible_var.get() if widgets.visible_var is not None else True
+        if self.phone_session.info.is_open:
+            self.phone_session.apply_pairable_visibility(pairable, visible)
+        else:
+            self.phone_session.info.last_status = (
+                f"HF defaults armed: pairable={'yes' if pairable else 'no'}, visible={'yes' if visible else 'no'}"
+            )
+            self._refresh_side("phone")
 
     def use_selected_device(self, side: str) -> None:
         device = self._selected_device(side)
@@ -309,7 +373,19 @@ class BridgeApp:
     def _on_port_changed(self, side: str) -> None:
         value = self._side_widgets[side].port_var.get().strip()
         self.sessions[side].info.port = value
+        self._update_port_detail(side)
         self._save_state()
+
+    def _update_port_detail(self, side: str) -> None:
+        widgets = self._side_widgets[side]
+        port_name = widgets.port_var.get().strip()
+        port = self._port_map.get(port_name)
+        if port is None:
+            widgets.port_detail_var.set("USB details unavailable. Refresh ports or choose a detected COM port.\nControl link: WICED HCI over USB serial")
+            return
+        lines = port.detail_lines()
+        lines.append(f"Expected board: {EXPECTED_IDENTITIES[side]}")
+        widgets.port_detail_var.set("\n".join(lines))
 
     def _save_preferred_from_entry(self, side: str) -> None:
         session_info = self.sessions[side].info
@@ -381,9 +457,10 @@ class BridgeApp:
         widgets.version_var.set(info.sdk_version or "<unknown>")
         widgets.groups_var.set(", ".join(f"0x{group:02X}" for group in info.supported_groups) or "<unknown>")
         widgets.preferred_var.set(info.preferred_remote_address)
+        self._update_port_detail(side)
 
         status_bits = ["Open" if info.is_open else "Closed"]
-        status_bits.append(f"AG/HF linked={'Yes' if info.ag_connected else 'No'}")
+        status_bits.append(f"Service={'Yes' if info.ag_connected else 'No'}")
         status_bits.append(f"A2DP={'Yes' if info.a2dp_connected else 'No'}")
         status_bits.append(f"AVRCP={'Yes' if info.avrc_connected else 'No'}")
         if info.last_status:
@@ -419,8 +496,9 @@ class BridgeApp:
     def _update_summary(self) -> None:
         phone = self.phone_session.info
         car = self.car_session.info
+        phone_mode = "visible/pairable" if self._side_widgets["phone"].visible_var.get() and self._side_widgets["phone"].pairable_var.get() else "custom HF flags"
         self.summary_var.set(
-            f"Phone={phone.bridge_identity or phone.port or 'offline'} | "
+            f"Phone={phone.bridge_identity or phone.port or 'offline'} ({phone_mode}) | "
             f"Car={car.bridge_identity or car.port or 'offline'} | "
             f"Tracked peers: phone={len(phone.discovered_devices)}, car={len(car.discovered_devices)}"
         )
