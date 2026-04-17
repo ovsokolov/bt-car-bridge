@@ -262,6 +262,9 @@ class SerialBridgeSession:
             f"Applied board visibility settings: pairable={'yes' if pairable else 'no'}, visible={'yes' if visible else 'no'}"
         )
 
+    def enable_phone_pairing(self) -> None:
+        self.apply_pairable_visibility(True, True)
+
     def bond(self, address: str) -> None:
         self._remember_remote(address)
         self.send(COMMAND_BOND, bd_addr_to_command(address))
@@ -377,6 +380,24 @@ class SerialBridgeSession:
         )
         self._sequence_thread.start()
 
+    def pair_ag_device(self, address: str) -> None:
+        if not address:
+            self._log("No car-side address was provided for pairing")
+            return
+        if not self.info.is_open:
+            self._log("Open the car-side serial session before starting one-click pair")
+            return
+        if self._sequence_thread is not None and self._sequence_thread.is_alive():
+            self._log("AG one-click pair is already running")
+            return
+        self._sequence_thread = threading.Thread(
+            target=self._run_ag_pair_sequence,
+            args=(address,),
+            name=f"ag-pair-{self.info.label}",
+            daemon=True,
+        )
+        self._sequence_thread.start()
+
     def _run_ag_connect_previous(self, address: str) -> None:
         steps: list[tuple[str, Callable[[], None], float]] = [
             ("Disconnecting old AG service link", self.ag_disconnect, 0.6),
@@ -400,6 +421,27 @@ class SerialBridgeSession:
                 self._log("AG one-step reconnect interrupted while waiting for the next step")
                 return
         self._log("AG one-step reconnect finished")
+
+    def _run_ag_pair_sequence(self, address: str) -> None:
+        steps: list[tuple[str, Callable[[], None], float]] = [
+            ("Disconnecting old AG service link", self.ag_disconnect, 0.6),
+            ("Disconnecting old A2DP source link", self.a2dp_source_disconnect, 0.6),
+            ("Disconnecting old AVRCP target link", self.avrc_tg_disconnect, 0.6),
+            (f"Removing old bond for {address}", lambda: self.unbond(address), 1.0),
+            (f"Starting fresh bond with {address}", lambda: self.bond(address), 1.6),
+        ]
+        self._remember_remote(address)
+        self._log(f"Starting AG one-click pair for {address}")
+        for label, action, wait_seconds in steps:
+            if self._stop_event.is_set() or not self.info.is_open:
+                self._log("AG one-click pair stopped because the session was closed")
+                return
+            self._log(label)
+            action()
+            if self._stop_event.wait(wait_seconds):
+                self._log("AG one-click pair interrupted while waiting for the next step")
+                return
+        self._log("AG one-click pair finished; respond to any PIN or numeric comparison prompts if shown")
 
     def send(self, opcode_value: int, payload: bytes = b"") -> bool:
         if not self.info.is_open or self._serial is None:

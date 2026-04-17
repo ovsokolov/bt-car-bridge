@@ -15,6 +15,9 @@ The active Python host/control interface for this bridge is in `C:\BT_Projects\c
 - AG firmware workspace: `C:\BT_Projects\headset_hfp_ag`
 - HF firmware workspace (this repo): `C:\BT_Projects\headset_hfp_hf`
 
+## Naming Note
+- Unless the user explicitly says `OLD` or `REFERENCE`, any mention of `client control`, `control client`, or `control UI` refers to the active Python UI at `C:\BT_Projects\control_ui`.
+
 ## Git Workflow
 - Git repository root: `C:\BT_Projects`
 - Treat `C:\BT_Projects` as the source-control root for `control_ui`, `headset_hfp_ag`, `headset_hfp_hf`, and `mtb-example-btsdk-audio-watch`.

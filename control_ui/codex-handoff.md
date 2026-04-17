@@ -4,6 +4,9 @@
 - The COM-port selector now shows richer labels directly in the dropdown instead of only raw `COMx` names.
 - `session.py` now builds a dropdown label that includes the port, product or description, manufacturer hint, and `WICED HCI` role hint.
 - `ui.py` now keeps a mapping between the human-readable dropdown labels and the underlying COM-port device name so the UI stays readable without breaking open or close behavior.
+- The phone-side panel is now reduced to a minimal HF workflow: open the board, then use one `Enable Phone Pairing` action when you want the phone to initiate pairing.
+- The car-side panel is now reduced to inquiry plus one `Pair Selected` action that disconnects old links, removes the previous bond for that address, and starts a fresh AG bond while still honoring PIN and numeric-comparison prompts.
+- In project notes, `client control`, `control client`, and `control UI` now refer to `C:\BT_Projects\control_ui` unless the user explicitly says `OLD` or `REFERENCE`.
 
 ## Current Operator Flow
 - Use the per-side port dropdown and look for labels such as:
@@ -21,9 +24,9 @@
 - Readable AT-command decoding sanity check passed.
 
 ## Practical Next Actions
-- Test with the real boards attached and confirm the dropdown labels make it obvious which USB serial device is the HCI control port.
-- If the label text is too long or still not distinctive enough, adjust `SerialPortInfo.dropdown_label()` in `src/control_ui_app/session.py`.
-- Continue validating repeated open or close cycles and AG `Connect Previous` on hardware.
+- Test with the real boards attached and confirm the dropdown labels still make it obvious which USB serial device is the HCI control port.
+- Validate that the phone side opens hidden and not pairable, then confirm `Enable Phone Pairing` is enough for the phone to discover and bond.
+- Validate that AG `Pair Selected` removes any old bond and then succeeds through either numeric comparison or PIN entry when hardware requests it.
 - After each meaningful completed change, commit from `C:\BT_Projects`.
 
 ## Files To Read First Next Time

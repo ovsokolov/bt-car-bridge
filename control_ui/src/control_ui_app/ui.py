@@ -18,8 +18,8 @@ EXPECTED_IDENTITIES = {
 }
 
 SIDE_ROLE_HINTS = {
-    "phone": "HF side: board should stay visible and pairable to the phone",
-    "car": "AG side: board reconnects to the remembered car device",
+    "phone": "HF side: keep the board hidden until you intentionally enable phone pairing",
+    "car": "AG side: run inquiry, select the car device, then use one-click pair",
 }
 
 
@@ -88,7 +88,6 @@ class BridgeApp:
         ttk.Label(top, text="Bridge Summary:").pack(side=tk.LEFT)
         ttk.Label(top, textvariable=self.summary_var).pack(side=tk.LEFT, padx=(6, 12))
         ttk.Button(top, text="Refresh Ports", command=self.refresh_ports).pack(side=tk.LEFT)
-        ttk.Button(top, text="Reconnect Preferred Both", command=self.reconnect_both).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(top, text="Clear Logs", command=self.clear_logs).pack(side=tk.LEFT, padx=(8, 0))
 
         middle = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
@@ -123,8 +122,8 @@ class BridgeApp:
         version_var = tk.StringVar(value="")
         groups_var = tk.StringVar(value="")
         preferred_var = tk.StringVar(value=info.preferred_remote_address)
-        pairable_var = tk.BooleanVar(value=True) if side == "phone" else None
-        visible_var = tk.BooleanVar(value=True) if side == "phone" else None
+        pairable_var = tk.BooleanVar(value=False) if side == "phone" else None
+        visible_var = tk.BooleanVar(value=False) if side == "phone" else None
 
         row = ttk.Frame(frame)
         row.pack(fill=tk.X, pady=(0, 6))
@@ -142,10 +141,7 @@ class BridgeApp:
         close_button = ttk.Button(row, text="Close", command=lambda key=side: self.close_session(key))
         close_button.pack(side=tk.LEFT, padx=(6, 0))
         if side == "phone":
-            ttk.Button(row, text="Apply HF Flags", command=self.apply_phone_flags).pack(side=tk.LEFT, padx=(6, 0))
-        else:
-            ttk.Button(row, text="Connect Previous", command=self.connect_previous_car).pack(side=tk.LEFT, padx=(6, 0))
-            ttk.Button(row, text="Reconnect Preferred", command=lambda key=side: self.reconnect_preferred(key)).pack(side=tk.LEFT, padx=(6, 0))
+            ttk.Button(row, text="Enable Phone Pairing", command=self.enable_phone_pairing).pack(side=tk.LEFT, padx=(6, 0))
 
         hint_row = ttk.Frame(frame)
         hint_row.pack(fill=tk.X, pady=(0, 6))
@@ -170,95 +166,40 @@ class BridgeApp:
             ttk.Label(label_row, text=f"{label_text}:", width=10).pack(side=tk.LEFT)
             ttk.Label(label_row, textvariable=var).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        if side == "phone":
-            check_row = ttk.Frame(frame)
-            check_row.pack(fill=tk.X, pady=(0, 8))
-            ttk.Checkbutton(
-                check_row,
-                text="Visible to phone",
-                variable=visible_var,
-                command=self.apply_phone_flags,
-            ).pack(side=tk.LEFT)
-            ttk.Checkbutton(
-                check_row,
-                text="Pairable",
-                variable=pairable_var,
-                command=self.apply_phone_flags,
-            ).pack(side=tk.LEFT, padx=(10, 0))
+        if side == "car":
+            preferred_row = ttk.Frame(frame)
+            preferred_row.pack(fill=tk.X, pady=(0, 8))
+            ttk.Label(preferred_row, text="Selected Remote", width=14).pack(side=tk.LEFT)
+            preferred_entry = ttk.Entry(preferred_row, textvariable=preferred_var)
+            preferred_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
+            preferred_entry.bind("<FocusOut>", lambda _event, key=side: self._save_preferred_from_entry(key))
+            ttk.Button(preferred_row, text="Use Selected", command=lambda key=side: self.use_selected_device(key)).pack(side=tk.LEFT)
 
-        preferred_row = ttk.Frame(frame)
-        preferred_row.pack(fill=tk.X, pady=(0, 8))
-        ttk.Label(preferred_row, text="Preferred Remote", width=14).pack(side=tk.LEFT)
-        preferred_entry = ttk.Entry(preferred_row, textvariable=preferred_var)
-        preferred_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
-        preferred_entry.bind("<FocusOut>", lambda _event, key=side: self._save_preferred_from_entry(key))
-        ttk.Button(preferred_row, text="Use Selected", command=lambda key=side: self.use_selected_device(key)).pack(side=tk.LEFT)
-
-        actions = ttk.Frame(frame)
-        actions.pack(fill=tk.X, pady=(0, 8))
-        for text, callback in (
-            ("Get Version", lambda key=side: self.sessions[key].request_version()),
-            ("Get Local BDA", lambda key=side: self.sessions[key].request_local_bda()),
-            ("Start Inquiry", lambda key=side: self.sessions[key].start_inquiry()),
-            ("Stop Inquiry", lambda key=side: self.sessions[key].stop_inquiry()),
-            ("Pairable On", lambda key=side: self.sessions[key].set_pairing_mode(True)),
-            ("Pairable Off", lambda key=side: self.sessions[key].set_pairing_mode(False)),
-            ("Visible On", lambda key=side: self.sessions[key].set_visibility(True, True)),
-            ("Visible Off", lambda key=side: self.sessions[key].set_visibility(False, False)),
-        ):
-            ttk.Button(actions, text=text, command=callback).pack(side=tk.LEFT, padx=(0, 4), pady=2)
-
-        profile_actions = ttk.Frame(frame)
-        profile_actions.pack(fill=tk.X, pady=(0, 8))
-        for text, callback in (
-            ("Bond Selected", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.bond(address))),
-            ("Unbond Selected", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.unbond(address))),
-            ("HF Connect", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.hf_connect(address))),
-            ("HF Disconnect", lambda key=side: self.sessions[key].hf_disconnect()),
-            ("AG Connect", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.ag_connect(address))),
-            ("AG Disconnect", lambda key=side: self.sessions[key].ag_disconnect()),
-            ("A2DP Sink Conn", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.a2dp_sink_connect(address))),
-            ("A2DP Sink Disc", lambda key=side: self.sessions[key].a2dp_sink_disconnect()),
-            ("A2DP Src Conn", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.a2dp_source_connect(address))),
-            ("A2DP Src Disc", lambda key=side: self.sessions[key].a2dp_source_disconnect()),
-            ("AVRCP CT Conn", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.avrc_ct_connect(address))),
-            ("AVRCP CT Disc", lambda key=side: self.sessions[key].avrc_ct_disconnect()),
-            ("AVRCP TG Conn", lambda key=side: self._with_selected_address(key, lambda session_obj, address: session_obj.avrc_tg_connect(address))),
-            ("AVRCP TG Disc", lambda key=side: self.sessions[key].avrc_tg_disconnect()),
-        ):
-            ttk.Button(profile_actions, text=text, command=callback).pack(side=tk.LEFT, padx=(0, 4), pady=2)
-
-        media_actions = ttk.Frame(frame)
-        media_actions.pack(fill=tk.X, pady=(0, 8))
-        for text, callback in (
-            ("HF Audio Open", lambda key=side: self.sessions[key].hf_audio_open()),
-            ("HF Audio Close", lambda key=side: self.sessions[key].hf_audio_close()),
-            ("AG Audio Open", lambda key=side: self.sessions[key].ag_audio_open()),
-            ("AG Audio Close", lambda key=side: self.sessions[key].ag_audio_close()),
-            ("Play", lambda key=side: self.sessions[key].avrc_play()),
-            ("Pause", lambda key=side: self.sessions[key].avrc_pause()),
-            ("Stop", lambda key=side: self.sessions[key].avrc_stop()),
-            ("Prev", lambda key=side: self.sessions[key].avrc_prev()),
-            ("Next", lambda key=side: self.sessions[key].avrc_next()),
-        ):
-            ttk.Button(media_actions, text=text, command=callback).pack(side=tk.LEFT, padx=(0, 4), pady=2)
+            actions = ttk.Frame(frame)
+            actions.pack(fill=tk.X, pady=(0, 8))
+            ttk.Button(actions, text="Start Inquiry", command=self.car_session.start_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
+            ttk.Button(actions, text="Stop Inquiry", command=self.car_session.stop_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
+            ttk.Button(actions, text="Pair Selected", command=self.pair_selected_car_device).pack(side=tk.LEFT, padx=(0, 4), pady=2)
 
         content = ttk.Panedwindow(frame, orient=tk.VERTICAL)
         content.pack(fill=tk.BOTH, expand=True)
 
-        devices_frame = ttk.LabelFrame(content, text="Discovered Devices", padding=6)
         logs_frame = ttk.LabelFrame(content, text="Per-Side Trace", padding=6)
-        content.add(devices_frame, weight=1)
-        content.add(logs_frame, weight=1)
+        if side == "car":
+            devices_frame = ttk.LabelFrame(content, text="Discovered Devices", padding=6)
+            content.add(devices_frame, weight=1)
+            listbox = tk.Listbox(devices_frame, height=10, exportselection=False)
+            listbox.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+            listbox.bind("<<ListboxSelect>>", lambda _event, key=side: self._on_device_selected(key))
+            device_scroll = ttk.Scrollbar(devices_frame, orient=tk.VERTICAL, command=listbox.yview)
+            device_scroll.pack(fill=tk.Y, side=tk.RIGHT)
+            listbox.configure(yscrollcommand=device_scroll.set)
+            content.add(logs_frame, weight=3)
+        else:
+            listbox = tk.Listbox(frame, height=1, exportselection=False)
+            content.add(logs_frame, weight=1)
 
-        listbox = tk.Listbox(devices_frame, height=12, exportselection=False)
-        listbox.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
-        listbox.bind("<<ListboxSelect>>", lambda _event, key=side: self._on_device_selected(key))
-        device_scroll = ttk.Scrollbar(devices_frame, orient=tk.VERTICAL, command=listbox.yview)
-        device_scroll.pack(fill=tk.Y, side=tk.RIGHT)
-        listbox.configure(yscrollcommand=device_scroll.set)
-
-        log_text = tk.Text(logs_frame, height=12, wrap="word")
+        log_text = tk.Text(logs_frame, height=24 if side == "phone" else 20, wrap="word")
         log_text.pack(fill=tk.BOTH, expand=True)
         log_text.configure(state=tk.DISABLED)
 
@@ -318,20 +259,6 @@ class BridgeApp:
         self.refresh_ports()
         self._refresh_side(side)
 
-    def reconnect_preferred(self, side: str) -> None:
-        self._save_preferred_from_entry(side)
-        self.sessions[side].reconnect_preferred(side)
-        self._save_state()
-
-    def reconnect_both(self) -> None:
-        self.reconnect_preferred("phone")
-        self.reconnect_preferred("car")
-
-    def connect_previous_car(self) -> None:
-        self._save_preferred_from_entry("car")
-        self.car_session.connect_previous_ag()
-        self._save_state()
-
     def apply_phone_flags(self) -> None:
         widgets = self._side_widgets["phone"]
         pairable = widgets.pairable_var.get() if widgets.pairable_var is not None else True
@@ -343,6 +270,25 @@ class BridgeApp:
                 f"HF defaults armed: pairable={'yes' if pairable else 'no'}, visible={'yes' if visible else 'no'}"
             )
             self._refresh_side("phone")
+
+    def enable_phone_pairing(self) -> None:
+        widgets = self._side_widgets["phone"]
+        if widgets.pairable_var is not None:
+            widgets.pairable_var.set(True)
+        if widgets.visible_var is not None:
+            widgets.visible_var.set(True)
+        self.apply_phone_flags()
+
+    def pair_selected_car_device(self) -> None:
+        device = self._selected_device("car")
+        if device is None:
+            messagebox.showinfo("No device selected", "Select a discovered device on the car side first.")
+            return
+        widgets = self._side_widgets["car"]
+        widgets.preferred_var.set(device.address)
+        self._save_preferred_from_entry("car")
+        self.car_session.pair_ag_device(device.address)
+        self._save_state()
 
     def use_selected_device(self, side: str) -> None:
         device = self._selected_device(side)
@@ -528,7 +474,7 @@ class BridgeApp:
     def _update_summary(self) -> None:
         phone = self.phone_session.info
         car = self.car_session.info
-        phone_mode = "visible/pairable" if self._side_widgets["phone"].visible_var.get() and self._side_widgets["phone"].pairable_var.get() else "custom HF flags"
+        phone_mode = "visible/pairable" if self._side_widgets["phone"].visible_var.get() and self._side_widgets["phone"].pairable_var.get() else "hidden/not pairable"
         self.summary_var.set(
             f"Phone={phone.bridge_identity or phone.port or 'offline'} ({phone_mode}) | "
             f"Car={car.bridge_identity or car.port or 'offline'} | "

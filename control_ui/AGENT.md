@@ -18,6 +18,9 @@ This project is the Python host UI and bridge-control workspace. It is intended 
 - Tkinter UI: `src/control_ui_app/ui.py`
 - Bridge documentation: `docs/bridge_spec.md`, `docs/bridge_spec.pdf`
 
+## Naming Note
+- In this project, any mention of `client control`, `control client`, or `control UI` refers to `C:\BT_Projects\control_ui` unless the user explicitly says `OLD` or `REFERENCE`.
+
 ## Key Decisions
 - UI is currently a Python/Tkinter app.
 - Serial transport is WICED HCI-style framed traffic.
@@ -27,6 +30,7 @@ This project is the Python host UI and bridge-control workspace. It is intended 
 ## Notes For Future Codex Sessions
 - Read `project_status.md` first for the current state.
 - Read `codex-handoff.md` for what has already been scaffolded and what is still missing.
+- Treat `C:\BT_Projects\control_ui` as the active UI whenever the user says `client control`, `control client`, or `control UI`, unless they explicitly say `OLD` or `REFERENCE`.
 - Keep the three-project system aligned:
   - `control_ui`
   - `headset_hfp_ag`
