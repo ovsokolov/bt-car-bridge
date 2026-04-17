@@ -127,6 +127,7 @@ class SerialBridgeSession:
         self._lock = threading.Lock()
         self._close_lock = threading.Lock()
         self._last_command_at = 0.0
+        self._pending_ag_auto_connect_address: Optional[str] = None
 
     @staticmethod
     def serial_supported() -> bool:
@@ -431,17 +432,54 @@ class SerialBridgeSession:
             (f"Starting fresh bond with {address}", lambda: self.bond(address), 1.6),
         ]
         self._remember_remote(address)
+        self._pending_ag_auto_connect_address = address
         self._log(f"Starting AG one-click pair for {address}")
         for label, action, wait_seconds in steps:
             if self._stop_event.is_set() or not self.info.is_open:
+                self._pending_ag_auto_connect_address = None
                 self._log("AG one-click pair stopped because the session was closed")
                 return
             self._log(label)
             action()
             if self._stop_event.wait(wait_seconds):
+                self._pending_ag_auto_connect_address = None
                 self._log("AG one-click pair interrupted while waiting for the next step")
                 return
-        self._log("AG one-click pair finished; respond to any PIN or numeric comparison prompts if shown")
+        self._log("AG bond started; respond to any PIN or numeric comparison prompts if shown")
+
+    def _start_ag_profile_connect_after_pair(self, address: str) -> None:
+        if self._stop_event.is_set() or not self.info.is_open:
+            self._log("AG profile connect skipped because the session is closed")
+            return
+        if self._sequence_thread is not None and self._sequence_thread.is_alive():
+            self._log("AG profile connect is waiting for the current sequence to finish")
+            return
+        self._sequence_thread = threading.Thread(
+            target=self._run_ag_profile_connect_sequence,
+            args=(address,),
+            name=f"ag-profile-connect-{self.info.label}",
+            daemon=True,
+        )
+        self._sequence_thread.start()
+
+    def _run_ag_profile_connect_sequence(self, address: str) -> None:
+        steps: list[tuple[str, Callable[[], None], float]] = [
+            (f"Connecting AG profile to {address}", lambda: self.ag_connect(address), 1.0),
+            (f"Connecting A2DP source profile to {address}", lambda: self.a2dp_source_connect(address), 1.0),
+            (f"Connecting AVRCP target profile to {address}", lambda: self.avrc_tg_connect(address), 1.0),
+        ]
+        self._remember_remote(address)
+        self._log(f"Pairing completed; connecting AG profiles for {address}")
+        for label, action, wait_seconds in steps:
+            if self._stop_event.is_set() or not self.info.is_open:
+                self._log("AG profile connect stopped because the session was closed")
+                return
+            self._log(label)
+            action()
+            if self._stop_event.wait(wait_seconds):
+                self._log("AG profile connect interrupted while waiting for the next step")
+                return
+        self._log("AG one-click pair finished with AG, A2DP, and AVRCP connect attempts")
 
     def send(self, opcode_value: int, payload: bytes = b"") -> bool:
         if not self.info.is_open or self._serial is None:
@@ -563,6 +601,13 @@ class SerialBridgeSession:
             self.info.last_status = "A2DP disconnected"
         elif packet.opcode == EVENT_PAIRING_COMPLETE and packet.payload:
             self.info.last_status = f"Pairing result: {packet.payload[0]}"
+            pending_address = self._pending_ag_auto_connect_address
+            self._pending_ag_auto_connect_address = None
+            if pending_address:
+                if packet.payload[0] == 0:
+                    self._start_ag_profile_connect_after_pair(pending_address)
+                else:
+                    self._log(f"AG pairing failed for {pending_address}; skipping profile connects")
         elif packet.opcode == EVENT_INQUIRY_COMPLETE:
             self.info.last_status = "Inquiry complete"
 

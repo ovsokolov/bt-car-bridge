@@ -144,15 +144,15 @@ class BridgeApp:
             ttk.Button(row, text="Enable Phone Pairing", command=self.enable_phone_pairing).pack(side=tk.LEFT, padx=(6, 0))
 
         hint_row = ttk.Frame(frame)
-        hint_row.pack(fill=tk.X, pady=(0, 6))
+        hint_row.pack(fill=tk.X, pady=(0, 4))
         ttk.Label(hint_row, text=SIDE_ROLE_HINTS[side]).pack(side=tk.LEFT)
 
         detail_row = ttk.Frame(frame)
-        detail_row.pack(fill=tk.X, pady=(0, 8))
+        detail_row.pack(fill=tk.X, pady=(0, 6))
         ttk.Label(detail_row, textvariable=port_detail_var, justify=tk.LEFT, wraplength=680).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         status_frame = ttk.Frame(frame)
-        status_frame.pack(fill=tk.X, pady=(0, 8))
+        status_frame.pack(fill=tk.X, pady=(0, 6))
         for label_text, var in (
             ("Expected", tk.StringVar(value=EXPECTED_IDENTITIES[side])),
             ("Identity", identity_var),
@@ -162,44 +162,36 @@ class BridgeApp:
             ("Status", status_var),
         ):
             label_row = ttk.Frame(status_frame)
-            label_row.pack(fill=tk.X, pady=1)
+            label_row.pack(fill=tk.X, pady=0)
             ttk.Label(label_row, text=f"{label_text}:", width=10).pack(side=tk.LEFT)
             ttk.Label(label_row, textvariable=var).pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         if side == "car":
-            preferred_row = ttk.Frame(frame)
-            preferred_row.pack(fill=tk.X, pady=(0, 8))
-            ttk.Label(preferred_row, text="Selected Remote", width=14).pack(side=tk.LEFT)
-            preferred_entry = ttk.Entry(preferred_row, textvariable=preferred_var)
-            preferred_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
-            preferred_entry.bind("<FocusOut>", lambda _event, key=side: self._save_preferred_from_entry(key))
-            ttk.Button(preferred_row, text="Use Selected", command=lambda key=side: self.use_selected_device(key)).pack(side=tk.LEFT)
-
             actions = ttk.Frame(frame)
-            actions.pack(fill=tk.X, pady=(0, 8))
+            actions.pack(fill=tk.X, pady=(0, 6))
             ttk.Button(actions, text="Start Inquiry", command=self.car_session.start_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
             ttk.Button(actions, text="Stop Inquiry", command=self.car_session.stop_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
             ttk.Button(actions, text="Pair Selected", command=self.pair_selected_car_device).pack(side=tk.LEFT, padx=(0, 4), pady=2)
 
-        content = ttk.Panedwindow(frame, orient=tk.VERTICAL)
+        content = ttk.Panedwindow(frame, orient=tk.HORIZONTAL if side == "car" else tk.VERTICAL)
         content.pack(fill=tk.BOTH, expand=True)
 
         logs_frame = ttk.LabelFrame(content, text="Per-Side Trace", padding=6)
         if side == "car":
             devices_frame = ttk.LabelFrame(content, text="Discovered Devices", padding=6)
             content.add(devices_frame, weight=1)
-            listbox = tk.Listbox(devices_frame, height=10, exportselection=False)
+            listbox = tk.Listbox(devices_frame, height=12, exportselection=False)
             listbox.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
             listbox.bind("<<ListboxSelect>>", lambda _event, key=side: self._on_device_selected(key))
             device_scroll = ttk.Scrollbar(devices_frame, orient=tk.VERTICAL, command=listbox.yview)
             device_scroll.pack(fill=tk.Y, side=tk.RIGHT)
             listbox.configure(yscrollcommand=device_scroll.set)
-            content.add(logs_frame, weight=3)
+            content.add(logs_frame, weight=4)
         else:
             listbox = tk.Listbox(frame, height=1, exportselection=False)
             content.add(logs_frame, weight=1)
 
-        log_text = tk.Text(logs_frame, height=24 if side == "phone" else 20, wrap="word")
+        log_text = tk.Text(logs_frame, height=24 if side == "phone" else 28, wrap="word")
         log_text.pack(fill=tk.BOTH, expand=True)
         log_text.configure(state=tk.DISABLED)
 
