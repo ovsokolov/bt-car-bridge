@@ -457,8 +457,6 @@ class SerialBridgeSession:
             ("Disconnecting old AG service link", self.ag_disconnect, 0.6),
             ("Disconnecting old A2DP source link", self.a2dp_source_disconnect, 0.6),
             ("Disconnecting old AVRCP target link", self.avrc_tg_disconnect, 0.6),
-            (f"Removing old bond for {address}", lambda: self.unbond(address), 1.0),
-            (f"Creating fresh bond with {address}", lambda: self.bond(address), 1.6),
             (f"Connecting AG profile to {address}", lambda: self.ag_connect(address), 0.8),
             (f"Connecting A2DP source profile to {address}", lambda: self.a2dp_source_connect(address), 0.8),
             (f"Connecting AVRCP target profile to {address}", lambda: self.avrc_tg_connect(address), 0.8),
@@ -481,8 +479,7 @@ class SerialBridgeSession:
             ("Disconnecting old AG service link", self.ag_disconnect, 0.6),
             ("Disconnecting old A2DP source link", self.a2dp_source_disconnect, 0.6),
             ("Disconnecting old AVRCP target link", self.avrc_tg_disconnect, 0.6),
-            (f"Removing old bond for {address}", lambda: self.unbond(address), 1.0),
-            (f"Starting fresh bond with {address}", lambda: self.bond(address), 1.6),
+            (f"Starting bond with {address}", lambda: self.bond(address), 1.6),
         ]
         self._remember_remote(address)
         self._pending_ag_auto_connect_address = address
