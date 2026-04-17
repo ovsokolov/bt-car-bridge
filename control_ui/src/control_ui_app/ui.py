@@ -488,10 +488,10 @@ class BridgeApp:
 
     def _bridge_phone_packet(self, opcode_value: int, payload: bytes) -> None:
         if opcode_value == EVENT_HF_AUDIO_OPEN:
-            self._bridge_ag_audio("open")
+            self._bridge_trace("Observed Phone HF audio open; skipping AG audio forwarding to avoid false answered state")
             return
         if opcode_value == EVENT_HF_AUDIO_CLOSE:
-            self._bridge_ag_audio("close")
+            self._bridge_trace("Observed Phone HF audio close; skipping AG audio forwarding")
             return
         if opcode_value < EVENT_HF_AT_BASE or opcode_value >= opcode(GROUP_HF, 0x40):
             return
@@ -530,13 +530,14 @@ class BridgeApp:
         elif event_code == 0x10 and text:
             self._send_car_result(f"+COPS: {text}", f"Phone HF +COPS {text} -> Car AG +COPS")
         elif event_code == 0x11 and text:
-            self._apply_call_state_from_clcc(text)
+            normalized_clcc = self._normalize_clcc(text)
+            self._apply_call_state_from_clcc(normalized_clcc)
             if self._pending_car_clcc_requests > 0:
                 self._pending_car_clcc_requests -= 1
-                self._send_car_result(f"+CLCC: {text}", f"Phone HF +CLCC {text} -> Car AG +CLCC")
-                clip_from_clcc = self._clip_from_clcc(text)
+                self._send_car_result(f"+CLCC: {normalized_clcc}", f"Phone HF +CLCC {text} -> Car AG +CLCC {normalized_clcc}")
+                clip_from_clcc = self._clip_from_clcc(normalized_clcc)
                 if clip_from_clcc:
-                    self._send_car_result(clip_from_clcc, f"Phone HF +CLCC {text} -> Car AG {clip_from_clcc}")
+                    self._send_car_result(clip_from_clcc, f"Phone HF +CLCC {normalized_clcc} -> Car AG {clip_from_clcc}")
             else:
                 self._bridge_trace(f"Ignored Phone HF +CLCC {text} because car did not request CLCC")
         elif event_code == 0x12 and text:
@@ -565,11 +566,11 @@ class BridgeApp:
     def _bridge_car_packet(self, opcode_value: int, payload: bytes) -> None:
         if opcode_value == EVENT_AG_AUDIO_OPEN:
             self._car_audio_open = True
-            self._bridge_hf_audio("open")
+            self._bridge_trace("Observed Car AG audio open; skipping HF audio forwarding")
             return
         if opcode_value == EVENT_AG_AUDIO_CLOSE:
             self._car_audio_open = False
-            self._bridge_hf_audio("close")
+            self._bridge_trace("Observed Car AG audio close; skipping HF audio forwarding")
             return
         if opcode_value == EVENT_AG_AT_CMD:
             handle, at_text = self._parse_ag_at_payload(payload)
@@ -729,6 +730,18 @@ class BridgeApp:
         if number_type == "145" and not number.startswith("+"):
             number = f"+{number}"
         return f'+CLIP: "{number}",{number_type}'
+
+    def _normalize_clcc(self, text: str) -> str:
+        parts = [part.strip() for part in text.split(",")]
+        if len(parts) < 7:
+            return text
+        number = parts[5].strip().strip('"')
+        number_type = parts[6].strip().strip('"')
+        if number_type == "145" and number and not number.startswith("+"):
+            number = f"+{number}"
+        parts[5] = f'"{number}"' if number else parts[5]
+        parts[6] = number_type if number_type else parts[6]
+        return ",".join(parts)
 
     def _apply_call_state_from_clcc(self, text: str) -> None:
         parts = [part.strip() for part in text.split(",")]
