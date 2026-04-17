@@ -162,8 +162,17 @@ class BridgeApp:
         open_button.pack(side=tk.LEFT)
         close_button = ttk.Button(row, text="Close", command=lambda key=side: self.close_session(key))
         close_button.pack(side=tk.LEFT, padx=(6, 0))
+
         if side == "phone":
-            ttk.Button(row, text="Enable Phone Pairing", command=self.enable_phone_pairing).pack(side=tk.LEFT, padx=(6, 0))
+            phone_actions = ttk.Frame(frame)
+            phone_actions.pack(fill=tk.X, pady=(0, 6))
+            ttk.Button(phone_actions, text="Enable Phone Pairing", command=self.enable_phone_pairing).pack(side=tk.LEFT)
+            ttk.Label(
+                phone_actions,
+                text="Makes the PhoneConnect board discoverable and pairable so the phone can start pairing.",
+                wraplength=620,
+                justify=tk.LEFT,
+            ).pack(side=tk.LEFT, padx=(8, 0), fill=tk.X, expand=True)
 
         hint_row = ttk.Frame(frame)
         hint_row.pack(fill=tk.X, pady=(0, 4))
