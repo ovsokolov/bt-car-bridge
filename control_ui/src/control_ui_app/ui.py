@@ -477,7 +477,6 @@ class BridgeApp:
 
     def _bridge_phone_packet(self, opcode_value: int, payload: bytes) -> None:
         if opcode_value == EVENT_HF_AUDIO_OPEN:
-            self._bridge_phone_call_answered_hint()
             self._bridge_ag_audio("open")
             return
         if opcode_value == EVENT_HF_AUDIO_CLOSE:
@@ -593,22 +592,6 @@ class BridgeApp:
         self.car_session.ag_set_cind(ag_cind)
         self._bridge_trace(f"Phone HF inferred incoming call -> Car AG Set CIND {ag_cind}")
         self._send_car_result("+CIEV: 2,1", "Phone HF inferred incoming call -> Car AG +CIEV 2,1")
-
-    def _bridge_phone_call_answered_hint(self) -> None:
-        updated = False
-        if self._phone_hf_cind[3] != "0":
-            self._phone_hf_cind[3] = "0"
-            updated = True
-        if self._phone_hf_cind[2] != "1":
-            self._phone_hf_cind[2] = "1"
-            updated = True
-        if not updated:
-            return
-        ag_cind = self._current_ag_cind()
-        self.car_session.ag_set_cind(ag_cind)
-        self._bridge_trace(f"Phone HF inferred active call -> Car AG Set CIND {ag_cind}")
-        self._send_car_result("+CIEV: 2,0", "Phone HF inferred active call -> Car AG +CIEV 2,0")
-        self._send_car_result("+CIEV: 1,1", "Phone HF inferred active call -> Car AG +CIEV 1,1")
 
     def _convert_phone_cind_to_ag(self, text: str) -> str:
         values = [part.strip() for part in text.split(",")]

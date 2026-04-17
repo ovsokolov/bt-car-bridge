@@ -264,9 +264,13 @@ class SerialBridgeSession:
 
     def apply_pairable_visibility(self, pairable: bool, visible: bool) -> None:
         self.set_pairing_mode(pairable)
-        self.set_visibility(visible, visible)
+        connectable = True
+        self.set_visibility(visible, connectable)
         self._log(
-            f"Applied board visibility settings: pairable={'yes' if pairable else 'no'}, visible={'yes' if visible else 'no'}"
+            "Applied board visibility settings: "
+            f"pairable={'yes' if pairable else 'no'}, "
+            f"discoverable={'yes' if visible else 'no'}, "
+            f"connectable={'yes' if connectable else 'no'}"
         )
 
     def enable_phone_pairing(self) -> None:
