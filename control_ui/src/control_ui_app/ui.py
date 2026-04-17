@@ -105,7 +105,15 @@ class BridgeApp:
             )
 
     def _build_ui(self) -> None:
-        top = ttk.Frame(self.root, padding=8)
+        tabs = ttk.Notebook(self.root)
+        tabs.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        control_tab = ttk.Frame(tabs, padding=8)
+        trace_tab = ttk.Frame(tabs, padding=8)
+        tabs.add(control_tab, text="Control")
+        tabs.add(trace_tab, text="Bridge Trace")
+
+        top = ttk.Frame(control_tab)
         top.pack(fill=tk.X)
 
         ttk.Label(top, text="Bridge Summary:").pack(side=tk.LEFT)
@@ -113,8 +121,8 @@ class BridgeApp:
         ttk.Button(top, text="Refresh Ports", command=self.refresh_ports).pack(side=tk.LEFT)
         ttk.Button(top, text="Clear Logs", command=self.clear_logs).pack(side=tk.LEFT, padx=(8, 0))
 
-        middle = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
-        middle.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        middle = ttk.Panedwindow(control_tab, orient=tk.HORIZONTAL)
+        middle.pack(fill=tk.BOTH, expand=True, pady=(8, 0))
 
         phone_frame = ttk.Frame(middle, padding=8)
         car_frame = ttk.Frame(middle, padding=8)
@@ -124,10 +132,10 @@ class BridgeApp:
         self._side_widgets["phone"] = self._build_side(phone_frame, "phone", "Phone Board")
         self._side_widgets["car"] = self._build_side(car_frame, "car", "Car Board")
 
-        bottom = ttk.LabelFrame(self.root, text="Unified Bridge Trace (All Sides + Bridge)", padding=8)
-        bottom.pack(fill=tk.X, expand=False, padx=8, pady=(0, 8))
-        self.bridge_log = tk.Text(bottom, height=14, wrap="word")
-        self.bridge_log.pack(fill=tk.BOTH, expand=False)
+        trace_box = ttk.LabelFrame(trace_tab, text="Unified Bridge Trace (All Sides + Bridge)", padding=8)
+        trace_box.pack(fill=tk.BOTH, expand=True)
+        self.bridge_log = tk.Text(trace_box, height=24, wrap="word")
+        self.bridge_log.pack(fill=tk.BOTH, expand=True)
         self.bridge_log.configure(state=tk.DISABLED)
 
     def _build_side(self, parent: ttk.Frame, side: str, title: str) -> SideWidgets:
