@@ -98,7 +98,7 @@ TRANSPORT?=UART
 # Legacy build flag name retained to match upstream app logic.
 # In this HF workspace the resulting runtime role is still A2DP sink.
 A2DP_SRC_INCLUDED := 1
-AVRCP_TG_INCLUDED := 1
+AVRCP_TG_INCLUDED := 0
 AVRCP_CT_INCLUDED := 1
 HFP_AG_INCLUDED ?= 0
 HFP_HF_INCLUDED ?= 1

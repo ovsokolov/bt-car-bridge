@@ -83,6 +83,13 @@ static wiced_bt_buffer_pool_t* watch_app_pool_small = NULL;
 
 #define WICED_HS_EIR_BUF_MAX_SIZE 264
 
+typedef enum
+{
+    HF_AUTORECONNECT_IDLE = 0,
+    HF_AUTORECONNECT_HFP,
+    HF_AUTORECONNECT_AVRCP,
+    HF_AUTORECONNECT_A2DP,
+} hf_autoreconnect_stage_t;
 
 static void write_eir(void);
 static wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data);
@@ -91,6 +98,9 @@ static void log_bond_state(void);
 static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg);
 static wiced_bool_t hf_get_last_bonded_device(wiced_bt_device_address_t bd_addr);
 static void hf_schedule_autoreconnect(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds);
+static void hf_schedule_autoreconnect_stage(const wiced_bt_device_address_t bd_addr,
+                                            hf_autoreconnect_stage_t stage,
+                                            uint32_t delay_seconds);
 static void hf_start_autoreconnect(const char *reason, uint32_t delay_seconds);
 
 extern wiced_result_t av_app_initiate_sdp(BD_ADDR bda);
@@ -112,14 +122,6 @@ static app_identity_random_mapping_t addr_mapping[ADDR_MAPPING_MAX_COUNT] = {0};
 static wiced_timer_t delayed_bond_dump_timer;
 static wiced_timer_t hf_autoreconnect_timer;
 static wiced_bt_device_address_t hf_autoreconnect_bda = {0};
-
-typedef enum
-{
-    HF_AUTORECONNECT_IDLE = 0,
-    HF_AUTORECONNECT_HFP,
-    HF_AUTORECONNECT_AVRCP,
-    HF_AUTORECONNECT_A2DP,
-} hf_autoreconnect_stage_t;
 
 static hf_autoreconnect_stage_t hf_autoreconnect_stage = HF_AUTORECONNECT_IDLE;
 
@@ -366,13 +368,36 @@ static wiced_bool_t hf_get_last_bonded_device(wiced_bt_device_address_t bd_addr)
 
 static void hf_schedule_autoreconnect(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds)
 {
+    hf_schedule_autoreconnect_stage(bd_addr, HF_AUTORECONNECT_HFP, delay_seconds);
+}
+
+static void hf_schedule_autoreconnect_stage(const wiced_bt_device_address_t bd_addr,
+                                            hf_autoreconnect_stage_t stage,
+                                            uint32_t delay_seconds)
+{
     memcpy(hf_autoreconnect_bda, bd_addr, BD_ADDR_LEN);
-    hf_autoreconnect_stage = HF_AUTORECONNECT_HFP;
+    hf_autoreconnect_stage = stage;
     wiced_stop_timer(&hf_autoreconnect_timer);
     wiced_start_timer(&hf_autoreconnect_timer, delay_seconds);
-    WICED_BT_TRACE("[HF_AUTO] scheduled reconnect to <%B> in %lu sec\n",
+    WICED_BT_TRACE("[HF_AUTO] scheduled stage %d to <%B> in %lu sec\n",
+                   stage,
                    hf_autoreconnect_bda,
                    (unsigned long)delay_seconds);
+}
+
+void hf_autoreconnect_restart_full(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds)
+{
+    hf_schedule_autoreconnect_stage(bd_addr, HF_AUTORECONNECT_HFP, delay_seconds);
+}
+
+void hf_autoreconnect_continue_from_hfp(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds)
+{
+    hf_schedule_autoreconnect_stage(bd_addr, HF_AUTORECONNECT_AVRCP, delay_seconds);
+}
+
+void hf_autoreconnect_continue_from_avrcp(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds)
+{
+    hf_schedule_autoreconnect_stage(bd_addr, HF_AUTORECONNECT_A2DP, delay_seconds);
 }
 
 static void hf_start_autoreconnect(const char *reason, uint32_t delay_seconds)
@@ -402,14 +427,12 @@ static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
         WICED_BT_TRACE("[HF_AUTO] connecting HFP HF to <%B>\n", hf_autoreconnect_bda);
         status = wiced_bt_hfp_hf_connect(hf_autoreconnect_bda);
         hf_autoreconnect_stage = HF_AUTORECONNECT_AVRCP;
-        wiced_start_timer(&hf_autoreconnect_timer, 2);
         break;
 
     case HF_AUTORECONNECT_AVRCP:
         WICED_BT_TRACE("[HF_AUTO] connecting AVRCP CT to <%B>\n", hf_autoreconnect_bda);
         status = wiced_bt_avrc_ct_connect(hf_autoreconnect_bda);
         hf_autoreconnect_stage = HF_AUTORECONNECT_A2DP;
-        wiced_start_timer(&hf_autoreconnect_timer, 2);
         break;
 
     case HF_AUTORECONNECT_A2DP:
@@ -501,7 +524,7 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
                 hci_control_send_pairing_completed_evt( pairing_result, p_event_data->pairing_complete.bd_addr );
                 if (pairing_result == WICED_BT_SUCCESS)
                 {
-                    hf_schedule_autoreconnect(p_event_data->pairing_complete.bd_addr, 1);
+                    hf_autoreconnect_restart_full(p_event_data->pairing_complete.bd_addr, 1);
                 }
             }
             else
