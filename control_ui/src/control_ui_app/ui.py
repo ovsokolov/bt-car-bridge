@@ -530,6 +530,9 @@ class BridgeApp:
             self._send_car_result(f"+COPS: {text}", f"Phone HF +COPS {text} -> Car AG +COPS")
         elif event_code == 0x11 and text:
             self._send_car_result(f"+CLCC: {text}", f"Phone HF +CLCC {text} -> Car AG +CLCC")
+            clip_from_clcc = self._clip_from_clcc(text)
+            if clip_from_clcc:
+                self._send_car_result(clip_from_clcc, f"Phone HF +CLCC {text} -> Car AG {clip_from_clcc}")
         elif event_code == 0x12 and text:
             self._send_car_result(f"+BIND: {text}", f"Phone HF +BIND {text} -> Car AG +BIND")
         elif event_code == 0x13:
@@ -565,6 +568,10 @@ class BridgeApp:
         if opcode_value == EVENT_AG_AT_CMD:
             handle, at_text = self._parse_ag_at_payload(payload)
             if at_text:
+                at_upper = at_text.strip().upper()
+                if at_upper == "ATA":
+                    self._bridge_trace("Ignored Car AG AT ATA to prevent unintended auto-answer")
+                    return
                 self.phone_session.hf_send_raw_at(at_text)
                 self._pending_car_at_responses += 1
                 self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT {at_text}")
@@ -699,6 +706,18 @@ class BridgeApp:
         if cleaned:
             return cleaned
         return text.strip()
+
+    def _clip_from_clcc(self, text: str) -> Optional[str]:
+        parts = [part.strip() for part in text.split(",")]
+        if len(parts) < 7:
+            return None
+        number = parts[5].strip().strip('"')
+        number_type = parts[6].strip().strip('"')
+        if not number:
+            return None
+        if not number_type.isdigit():
+            number_type = "129"
+        return f'+CLIP: "{number}",{number_type}'
 
     def _bridge_trace(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
