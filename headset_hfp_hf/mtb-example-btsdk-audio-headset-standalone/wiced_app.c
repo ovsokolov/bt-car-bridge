@@ -115,6 +115,7 @@ static app_identity_random_mapping_t addr_mapping[ADDR_MAPPING_MAX_COUNT] = {0};
 static wiced_timer_t delayed_bond_dump_timer;
 static wiced_timer_t hf_autoreconnect_timer;
 static wiced_bt_device_address_t hf_autoreconnect_bda = {0};
+static uint8_t hf_autoreconnect_a2dp_retry_count = 0;
 
 typedef enum
 {
@@ -125,6 +126,8 @@ typedef enum
 } hf_autoreconnect_stage_t;
 
 static hf_autoreconnect_stage_t hf_autoreconnect_stage = HF_AUTORECONNECT_IDLE;
+
+#define HF_AUTORECONNECT_A2DP_MAX_RETRIES 3
 
 /*
  * Application Start, ie, entry point to the application.
@@ -377,6 +380,10 @@ static void hf_schedule_autoreconnect_stage(const wiced_bt_device_address_t bd_a
                                             uint32_t delay_seconds)
 {
     memcpy(hf_autoreconnect_bda, bd_addr, BD_ADDR_LEN);
+    if (stage == HF_AUTORECONNECT_HFP)
+    {
+        hf_autoreconnect_a2dp_retry_count = 0;
+    }
     hf_autoreconnect_stage = stage;
     wiced_stop_timer(&hf_autoreconnect_timer);
     wiced_start_timer(&hf_autoreconnect_timer, delay_seconds);
@@ -398,6 +405,22 @@ void hf_autoreconnect_continue_from_hfp(const wiced_bt_device_address_t bd_addr,
 
 void hf_autoreconnect_continue_from_avrcp(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds)
 {
+    hf_schedule_autoreconnect_stage(bd_addr, HF_AUTORECONNECT_A2DP, delay_seconds);
+}
+
+void hf_autoreconnect_retry_a2dp(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds)
+{
+    if (hf_autoreconnect_a2dp_retry_count >= HF_AUTORECONNECT_A2DP_MAX_RETRIES)
+    {
+        WICED_BT_TRACE("[HF_AUTO] A2DP retry budget exhausted for <%B>\n", bd_addr);
+        return;
+    }
+
+    hf_autoreconnect_a2dp_retry_count++;
+    WICED_BT_TRACE("[HF_AUTO] scheduling A2DP retry %u/%u for <%B>\n",
+                   hf_autoreconnect_a2dp_retry_count,
+                   HF_AUTORECONNECT_A2DP_MAX_RETRIES,
+                   bd_addr);
     hf_schedule_autoreconnect_stage(bd_addr, HF_AUTORECONNECT_A2DP, delay_seconds);
 }
 
@@ -443,6 +466,10 @@ static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
                                          sizeof(audio_format_cmd));
         status = av_app_initiate_sdp(hf_autoreconnect_bda);
         hf_autoreconnect_stage = HF_AUTORECONNECT_IDLE;
+        if (status != WICED_SUCCESS)
+        {
+            hf_autoreconnect_retry_a2dp(hf_autoreconnect_bda, 2);
+        }
         break;
 
     default:
