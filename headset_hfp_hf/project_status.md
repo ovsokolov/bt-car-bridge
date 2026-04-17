@@ -19,7 +19,6 @@
   - pairing success can still start a full reconnect
   - HFP service reconnect advances the firmware to AVRCP CT reconnect
   - AVRCP CT reconnect advances the firmware to A2DP sink reconnect
-- The legacy A2DP module now uses role-aware peer-service lookup instead of hardcoded source wording, and the HF sink path will retry the A2DP reconnect stage a few times if the first post-reboot SDP attempt fails.
 - LE, AMS, and ANCS are enabled by default.
 - PANU and PANNAP are disabled by default.
 - `libs/mtb.mk` and the `core-make` include are restored in the app `makefile`.
@@ -40,7 +39,7 @@
 - A full `make` validation was not completed in this session from plain PowerShell because:
   - `make` is not on `PATH` in the current shell
   - the bundled ModusToolbox Cygwin `make.exe` crashed in this session with a Windows permission or mapping error
-- Real hardware retest is still needed to confirm the new event-driven AVRCP and A2DP reconnect path after a board reboot, especially whether the bounded A2DP retry closes the gap seen after HFP reconnect.
+- Real hardware retest is still needed to confirm the new event-driven AVRCP and A2DP reconnect path after a board reboot.
 
 ## Suggested Next Step
 - Open the project from the proper ModusToolbox shell and run a clean non-destructive validation such as `make get_app_info` or `make build`.

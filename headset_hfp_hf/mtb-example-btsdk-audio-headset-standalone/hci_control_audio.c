@@ -49,7 +49,6 @@
 #include "hci_control.h"
 #include "hci_control_audio.h"
 #include "hci_control_rc_target.h"
-#include "wiced_app.h"
 #include "wiced_timer.h"
 #include "string.h"
 #include "wiced_memory.h"
@@ -232,48 +231,6 @@ static void av_app_am_audio_stop(void);
 #ifdef WICED_APP_AUDIO_RC_CT_INCLUDED
 extern wiced_result_t wiced_bt_avrc_ct_cleanup( void );
 #endif
-
-static uint16_t av_app_peer_service_uuid(void)
-{
-    return (a2dp_profile_role == A2DP_SINK_ROLE) ? UUID_SERVCLASS_AUDIO_SOURCE : UUID_SERVCLASS_AUDIO_SINK;
-}
-
-static const char *av_app_local_role_name(void)
-{
-    return (a2dp_profile_role == A2DP_SINK_ROLE) ? "A2DP sink" : "A2DP source";
-}
-
-static const char *av_app_peer_role_name(void)
-{
-    return (a2dp_profile_role == A2DP_SINK_ROLE) ? "A2DP source" : "A2DP sink";
-}
-
-static void av_app_disconnect_avrcp_companion(void)
-{
-    if (avrcp_profile_role == AVRCP_TARGET_ROLE)
-    {
-#ifdef WICED_APP_AUDIO_RC_TG_INCLUDED
-        wiced_bt_avrc_tg_initiate_close();
-#endif
-        return;
-    }
-
-#ifdef WICED_APP_AUDIO_RC_CT_INCLUDED
-    wiced_bt_avrc_ct_cleanup();
-#endif
-}
-
-static void av_app_schedule_hf_a2dp_retry(uint32_t delay_seconds)
-{
-#ifdef WICED_APP_HFP_HF_INCLUDED
-    if (a2dp_profile_role == A2DP_SINK_ROLE)
-    {
-        hf_autoreconnect_retry_a2dp(av_app_cb.peer_bda, delay_seconds);
-    }
-#else
-    UNUSED_VARIABLE(delay_seconds);
-#endif
-}
 
 wiced_timer_t hci_control_audio_conn_idle_timer;
 wiced_timer_t hci_control_audio_set_cfg_timer;
@@ -1533,7 +1490,22 @@ static wiced_result_t av_app_disconnect_connection(void)
     {
         av_app_cb.state = AV_STATE_DISCONNECTING;
         av_app_cb.reconfigure_rejected = WICED_FALSE;
-        av_app_disconnect_avrcp_companion();
+
+        if (avrcp_profile_role == AVRCP_TARGET_ROLE)
+        {
+#ifdef WICED_APP_AUDIO_RC_TG_INCLUDED
+            wiced_bt_avrc_tg_initiate_close();
+#endif
+        }
+        else
+        {
+            /* unexpected AVRCP role with A2DP source, but we still need to disconnect
+             * AVRC links for a cleanup environment */
+            WICED_BT_TRACE("Unexpected AVRCP role:%d\n", avrcp_profile_role);
+#ifdef WICED_APP_AUDIO_RC_CT_INCLUDED
+            wiced_bt_avrc_ct_cleanup();
+#endif
+        }
     }
 
     return status;
@@ -1993,23 +1965,19 @@ void av_app_sdp_cback( uint16_t sdp_result )
 
     if ( sdp_result == WICED_BT_SDP_SUCCESS )
     {
-        /* Search the peer audio service record and find the AVDTP version. */
+        // Search Source record and find AVDTP version
         if ( (p_rec = wiced_bt_sdp_find_service_in_db (av_app_cb.p_sdp_db,
-                      av_app_peer_service_uuid(), p_rec)) != NULL)
+                      UUID_SERVCLASS_AUDIO_SOURCE, p_rec)) != NULL)
         {
             /* Get AVDTP version */
             if (wiced_bt_sdp_find_protocol_list_elem_in_rec (p_rec,
                           UUID_PROTOCOL_AVDTP, &elem) == WICED_TRUE)
             {
-                /* Found the peer media service, so we can now attempt the AVDTP connection. */
+                /* Found the A2DP Source service. attempt to connect to it */
                 av_app_cb.state = AV_STATE_SDP_DONE;
 
                 av_app_cb.peer_avdt_version = elem.params[0];
-                WICED_BT_TRACE("[%s] found peer %s service for local %s, avdt version 0x%x\n",
-                               __FUNCTION__,
-                               av_app_peer_role_name(),
-                               av_app_local_role_name(),
-                               av_app_cb.peer_avdt_version);
+                WICED_BT_TRACE( "Service is found in the remote device %x\n\r", av_app_cb.peer_avdt_version );
             }
         }
     }
@@ -2047,7 +2015,6 @@ void av_app_sdp_cback( uint16_t sdp_result )
         {
              av_app_cb.state = AV_STATE_IDLE;
              hci_control_audio_send_connect_complete( av_app_cb.peer_bda, status, 0 );
-             av_app_schedule_hf_a2dp_retry(2);
         }
         else
         {
@@ -2082,9 +2049,9 @@ wiced_result_t av_app_initiate_sdp( BD_ADDR bda )
     WICED_BT_TRACE( "av_app_initiate_sdp %x\n\r", (uint32_t)av_app_cb.p_sdp_db );
 
     uuid_list.len       = LEN_UUID_16;
-    uuid_list.uu.uuid16 = av_app_peer_service_uuid();
+    uuid_list.uu.uuid16 = UUID_SERVCLASS_AUDIO_SOURCE;
 
-    /* Search the remote device for the complementary A2DP service role. */
+    /* Search the contents of the database for the A2DP Source service */
     result = wiced_bt_sdp_init_discovery_db (av_app_cb.p_sdp_db, SDP_DB_LEN,
                                              1,&uuid_list,
                                              sizeof(attr_list)/sizeof(attr_list[0]), attr_list);
@@ -2098,16 +2065,12 @@ wiced_result_t av_app_initiate_sdp( BD_ADDR bda )
         }
         else
         {
-            WICED_BT_TRACE("[%s] SDP search request failed while looking for peer %s service\n",
-                           __func__,
-                           av_app_peer_role_name());
+            WICED_BT_TRACE("[%s] wiced_bt_sdp_service_search_attribute_request fail \n", __func__);
         }
     }
     else
     {
-        WICED_BT_TRACE("[%s] SDP discovery DB init failed for peer %s service\n",
-                       __func__,
-                       av_app_peer_role_name());
+        WICED_BT_TRACE("[%s] wiced_bt_sdp_init_discovery_db fail \n", __func__);
     }
 
     wiced_bt_free_buffer(av_app_cb.p_sdp_db);
@@ -2368,7 +2331,7 @@ void avdt_init( )
 
     av_app_cb.stream_cb.cfg.num_codec   = 1;
     av_app_cb.stream_cb.cfg.num_protect = 0;
-    av_app_cb.stream_cb.tsep            = (a2dp_profile_role == A2DP_SINK_ROLE) ? AVDT_TSEP_SNK : AVDT_TSEP_SRC;
+    av_app_cb.stream_cb.tsep            = AVDT_TSEP_SNK;          /* Local HF endpoint is a sink; the phone exposes source SEPs. */
     av_app_cb.stream_cb.nsc_mask        = AVDT_NSC_RECONFIG;      /* Reconfigure command not supported */
     av_app_cb.stream_cb.APP_AVDT_CB     = av_app_proc_stream_evt; /* AVDT event callback */
     av_app_cb.stream_cb.cfg.psc_mask    = AVDT_PSC_TRANS|AVDT_PSC_DELAY_RPT;         /* Protocol service capabilities = Media transport and Delay Report*/
