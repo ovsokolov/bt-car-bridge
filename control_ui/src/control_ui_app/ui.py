@@ -631,6 +631,9 @@ class BridgeApp:
         )
 
     def _send_car_result(self, text: str, trace: str) -> None:
+        if self.car_session.info.service_handle <= 0:
+            self._bridge_trace(f"Skipped Car AG send '{text}' because no AG service handle is available yet")
+            return
         self.car_session.ag_send_string(text)
         self._bridge_trace(trace)
 
@@ -643,6 +646,9 @@ class BridgeApp:
             self._bridge_trace("Car AG audio close -> Phone HF audio close")
 
     def _bridge_ag_audio(self, action: str) -> None:
+        if self.car_session.info.service_handle <= 0:
+            self._bridge_trace(f"Skipped Car AG audio {action} because no AG service handle is available yet")
+            return
         if action == "open":
             self.car_session.ag_audio_open()
             self._bridge_trace("Phone HF audio open -> Car AG audio open")

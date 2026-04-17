@@ -624,6 +624,10 @@ class SerialBridgeSession:
                 raw_bda=bytes(packet.payload[:6]),
                 address=bd_addr_to_display(packet.payload[:6]),
             )
+        elif packet.opcode == opcode(0x03, 0x01):
+            if len(packet.payload) >= 2:
+                self.info.service_handle = packet.payload[0] | (packet.payload[1] << 8)
+            self.info.last_status = "HF service opened"
         elif packet.opcode == opcode(0x03, 0x03):
             self.info.ag_connected = True
             if len(packet.payload) >= 2:
@@ -633,6 +637,10 @@ class SerialBridgeSession:
             self.info.ag_connected = False
             self.info.service_handle = 0
             self.info.last_status = "HF service disconnected"
+        elif packet.opcode == opcode(0x0E, 0x01):
+            if len(packet.payload) >= 2:
+                self.info.service_handle = packet.payload[0] | (packet.payload[1] << 8)
+            self.info.last_status = "AG service opened"
         elif packet.opcode == opcode(0x0E, 0x03):
             self.info.ag_connected = True
             if len(packet.payload) >= 2:
