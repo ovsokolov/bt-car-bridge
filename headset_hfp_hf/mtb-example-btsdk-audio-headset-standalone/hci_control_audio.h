@@ -33,7 +33,7 @@
 
 /** @file
  *
- * A2DP support for the HCI-controlled audio application.
+ * A2DP support for HCI AV Source application
  */
 #pragma once
 
