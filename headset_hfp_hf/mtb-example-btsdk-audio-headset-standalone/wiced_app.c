@@ -83,6 +83,13 @@ static wiced_bt_buffer_pool_t* watch_app_pool_small = NULL;
 
 #define WICED_HS_EIR_BUF_MAX_SIZE 264
 
+typedef enum
+{
+    HF_AUTORECONNECT_IDLE = 0,
+    HF_AUTORECONNECT_HFP,
+    HF_AUTORECONNECT_AVRCP,
+    HF_AUTORECONNECT_A2DP,
+} hf_autoreconnect_stage_t;
 
 static void write_eir(void);
 static wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data);
@@ -116,14 +123,6 @@ static wiced_timer_t delayed_bond_dump_timer;
 static wiced_timer_t hf_autoreconnect_timer;
 static wiced_bt_device_address_t hf_autoreconnect_bda = {0};
 static uint8_t hf_autoreconnect_a2dp_retry_count = 0;
-
-typedef enum
-{
-    HF_AUTORECONNECT_IDLE = 0,
-    HF_AUTORECONNECT_HFP,
-    HF_AUTORECONNECT_AVRCP,
-    HF_AUTORECONNECT_A2DP,
-} hf_autoreconnect_stage_t;
 
 static hf_autoreconnect_stage_t hf_autoreconnect_stage = HF_AUTORECONNECT_IDLE;
 
