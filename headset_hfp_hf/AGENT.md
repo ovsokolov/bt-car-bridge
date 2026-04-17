@@ -42,7 +42,6 @@ The active Python host/control interface for this bridge is in `C:\BT_Projects\c
   - `A2DP sink`
   - `AVRCP CT`
   - not `AVRCP TG` unless requirements explicitly change
-- The standalone sample still uses the legacy `WICED_APP_AUDIO_SRC_INCLUDED` plumbing, but this workspace now treats that module as a sink-oriented path on the HF side. Prefer explicit role checks over trusting the old macro name.
 - Device name should remain `NavTool-PhoneConnect` unless requirements explicitly change.
 - Firmware now emits a custom bridge identity event so host tools can identify the board over serial.
 - Direct hardware audio between devkits is the design direction; UART is for control/logging only.
