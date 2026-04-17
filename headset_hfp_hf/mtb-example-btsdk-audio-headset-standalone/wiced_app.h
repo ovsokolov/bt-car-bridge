@@ -71,6 +71,7 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
 void hf_autoreconnect_restart_full(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds);
 void hf_autoreconnect_continue_from_hfp(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds);
 void hf_autoreconnect_continue_from_avrcp(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds);
+void hf_autoreconnect_retry_a2dp(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds);
 
 extern hci_control_nvram_chunk_t *p_nvram_first;
 extern const uint8_t pincode[WICED_PIN_CODE_LEN];
