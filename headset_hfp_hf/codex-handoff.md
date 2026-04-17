@@ -5,6 +5,7 @@
 - `project_status.md` and `codex-handoff.md` were also found to be NUL-filled and unreadable.
 - This handoff file is a clean restart point built from the current repo state and `AGENT.md`.
 - The HF workspace was then adjusted to stop building AVRCP Target on PhoneConnect and to resume media reconnect in response to HFP and AVRCP connection events instead of only using a fixed timer chain.
+- The HF workspace also now carries explicit `a2dp_profile_role` state so version reporting and EIR advertising can be sink-oriented without pretending the old source-named macro reflects the runtime role.
 
 ## Current Understanding
 - This repo is the HF side of the bridge system for `CYBT-343026-EVAL`.
