@@ -91,6 +91,7 @@ class BridgeApp:
         }
         self._car_audio_open = False
         self._pending_car_at_responses = 0
+        self._pending_car_clcc_requests = 0
 
         self._build_ui()
         self.refresh_ports()
@@ -529,10 +530,15 @@ class BridgeApp:
         elif event_code == 0x10 and text:
             self._send_car_result(f"+COPS: {text}", f"Phone HF +COPS {text} -> Car AG +COPS")
         elif event_code == 0x11 and text:
-            self._send_car_result(f"+CLCC: {text}", f"Phone HF +CLCC {text} -> Car AG +CLCC")
-            clip_from_clcc = self._clip_from_clcc(text)
-            if clip_from_clcc:
-                self._send_car_result(clip_from_clcc, f"Phone HF +CLCC {text} -> Car AG {clip_from_clcc}")
+            self._apply_call_state_from_clcc(text)
+            if self._pending_car_clcc_requests > 0:
+                self._pending_car_clcc_requests -= 1
+                self._send_car_result(f"+CLCC: {text}", f"Phone HF +CLCC {text} -> Car AG +CLCC")
+                clip_from_clcc = self._clip_from_clcc(text)
+                if clip_from_clcc:
+                    self._send_car_result(clip_from_clcc, f"Phone HF +CLCC {text} -> Car AG {clip_from_clcc}")
+            else:
+                self._bridge_trace(f"Ignored Phone HF +CLCC {text} because car did not request CLCC")
         elif event_code == 0x12 and text:
             self._send_car_result(f"+BIND: {text}", f"Phone HF +BIND {text} -> Car AG +BIND")
         elif event_code == 0x13:
@@ -572,12 +578,15 @@ class BridgeApp:
                 if at_upper == "ATA":
                     self._bridge_trace("Ignored Car AG AT ATA to prevent unintended auto-answer")
                     return
+                if at_upper == "AT+CLCC":
+                    self._pending_car_clcc_requests += 1
                 self.phone_session.hf_send_raw_at(at_text)
                 self._pending_car_at_responses += 1
                 self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT {at_text}")
             return
         if opcode_value == EVENT_AG_CLCC_REQ:
             self.phone_session.hf_send_raw_at("AT+CLCC")
+            self._pending_car_clcc_requests += 1
             self._pending_car_at_responses += 1
             self._bridge_trace("Car AG CLCC request -> Phone HF raw AT AT+CLCC")
             return
@@ -717,7 +726,49 @@ class BridgeApp:
             return None
         if not number_type.isdigit():
             number_type = "129"
+        if number_type == "145" and not number.startswith("+"):
+            number = f"+{number}"
         return f'+CLIP: "{number}",{number_type}'
+
+    def _apply_call_state_from_clcc(self, text: str) -> None:
+        parts = [part.strip() for part in text.split(",")]
+        if len(parts) < 3 or not parts[2].isdigit():
+            return
+        clcc_status = int(parts[2])
+        updates = None
+        if clcc_status == 0:
+            updates = ("1", "0", "0")
+        elif clcc_status == 1:
+            updates = ("1", "0", "1")
+        elif clcc_status in {2, 3}:
+            updates = ("0", "2", "0")
+        elif clcc_status == 4:
+            updates = ("0", "1", "0")
+        elif clcc_status == 5:
+            updates = ("1", "1", "0")
+        elif clcc_status == 6:
+            updates = ("1", "0", "2")
+        if updates is None:
+            return
+        call_val, setup_val, held_val = updates
+        changed = False
+        if self._phone_hf_cind[2] != call_val:
+            self._phone_hf_cind[2] = call_val
+            changed = True
+        if self._phone_hf_cind[3] != setup_val:
+            self._phone_hf_cind[3] = setup_val
+            changed = True
+        if self._phone_hf_cind[4] != held_val:
+            self._phone_hf_cind[4] = held_val
+            changed = True
+        if not changed:
+            return
+        ag_cind = self._current_ag_cind()
+        self.car_session.ag_set_cind(ag_cind)
+        self._bridge_trace(f"Phone HF +CLCC status {clcc_status} -> Car AG Set CIND {ag_cind}")
+        self._send_car_result(f"+CIEV: 1,{call_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 1,{call_val}")
+        self._send_car_result(f"+CIEV: 2,{setup_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 2,{setup_val}")
+        self._send_car_result(f"+CIEV: 3,{held_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 3,{held_val}")
 
     def _bridge_trace(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
