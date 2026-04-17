@@ -653,10 +653,10 @@ void hci_control_write_eir( void )
     p++;
     UINT8_TO_STREAM(p, BT_EIR_COMPLETE_16BITS_UUID_TYPE);
 #ifdef WICED_APP_AUDIO_SRC_INCLUDED
-    if (a2dp_profile_role == A2DP_SOURCE_ROLE)
-    {
-        UINT16_TO_STREAM(p, UUID_SERVCLASS_AUDIO_SOURCE);   nb_uuid++;
-    }
+    /* Keep the legacy audio-source UUID in EIR for compatibility with phone
+     * discovery flows. The runtime profile role still controls the actual
+     * A2DP behavior and SDP path. */
+    UINT16_TO_STREAM(p, UUID_SERVCLASS_AUDIO_SOURCE);       nb_uuid++;
 #endif
 #ifdef WICED_APP_AUDIO_RC_TG_INCLUDED
     UINT16_TO_STREAM(p, UUID_SERVCLASS_AV_REM_CTRL_TARGET); nb_uuid++;
