@@ -124,7 +124,7 @@ void hci_control_misc_handle_get_version( void )
     tx_buf[cmd++] = HCI_CONTROL_GROUP_GATT;
 #endif
 #ifdef WICED_APP_AUDIO_SRC_INCLUDED
-    tx_buf[cmd++] = (a2dp_profile_role == A2DP_SINK_ROLE) ? HCI_CONTROL_GROUP_AUDIO_SINK : HCI_CONTROL_GROUP_AUDIO;
+    tx_buf[cmd++] = HCI_CONTROL_GROUP_AUDIO;
 #endif
 #ifdef WICED_APP_ANCS_INCLUDED
     tx_buf[cmd++] = HCI_CONTROL_GROUP_ANCS;

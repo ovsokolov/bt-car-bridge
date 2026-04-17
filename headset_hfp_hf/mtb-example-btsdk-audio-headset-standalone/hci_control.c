@@ -263,12 +263,6 @@
 /******************************************************
  *               Variables Definitions
  ******************************************************/
-#ifdef WICED_APP_HFP_HF_INCLUDED
-uint8_t a2dp_profile_role = A2DP_SINK_ROLE;
-#else
-uint8_t a2dp_profile_role = A2DP_SOURCE_ROLE;
-#endif
-
 #ifdef WICED_APP_AUDIO_RC_TG_INCLUDED
 uint8_t avrcp_profile_role = AVRCP_TARGET_ROLE;
 #elif defined (WICED_APP_AUDIO_RC_CT_INCLUDED)
@@ -400,9 +394,6 @@ void hci_control_post_init(void)
 #endif
 
 #ifdef WICED_APP_AUDIO_SRC_INCLUDED
-    /* This workspace still uses the standalone sample's legacy audio module,
-     * but on the HF side we drive it as a phone-facing A2DP sink.
-     */
     av_app_init();
 #endif
 #ifdef WICED_APP_AUDIO_RC_CT_INCLUDED
@@ -653,20 +644,14 @@ void hci_control_write_eir( void )
     p++;
     UINT8_TO_STREAM(p, BT_EIR_COMPLETE_16BITS_UUID_TYPE);
 #ifdef WICED_APP_AUDIO_SRC_INCLUDED
-    if (a2dp_profile_role == A2DP_SOURCE_ROLE)
-    {
-        UINT16_TO_STREAM(p, UUID_SERVCLASS_AUDIO_SOURCE);   nb_uuid++;
-    }
+    UINT16_TO_STREAM(p, UUID_SERVCLASS_AUDIO_SOURCE);       nb_uuid++;
 #endif
 #ifdef WICED_APP_AUDIO_RC_TG_INCLUDED
     UINT16_TO_STREAM(p, UUID_SERVCLASS_AV_REM_CTRL_TARGET); nb_uuid++;
 #endif
 #ifdef WICED_APP_AUDIO_RC_CT_INCLUDED
     UINT16_TO_STREAM(p, UUID_SERVCLASS_AV_REMOTE_CONTROL);  nb_uuid++;
-    if (a2dp_profile_role == A2DP_SINK_ROLE)
-    {
-        UINT16_TO_STREAM(p, UUID_SERVCLASS_AUDIO_SINK);     nb_uuid++;
-    }
+    UINT16_TO_STREAM(p, UUID_SERVCLASS_AUDIO_SINK);         nb_uuid++;
 #endif
 #if (defined(WICED_APP_HFP_AG_INCLUDED) || defined(WICED_APP_HFP_HF_INCLUDED))
     UINT16_TO_STREAM(p, UUID_SERVCLASS_HEADSET);            nb_uuid++;
@@ -1831,17 +1816,6 @@ void hci_control_switch_avrcp_role(uint8_t new_role)
         }
     }
 #endif
-}
-
-void hci_control_switch_a2dp_role(uint8_t new_role)
-{
-    if (new_role == a2dp_profile_role)
-    {
-        return;
-    }
-
-    WICED_BT_TRACE("[%s] Switch from %d to %d\n", __FUNCTION__, a2dp_profile_role, new_role);
-    a2dp_profile_role = new_role;
 }
 
 void hci_control_transport_status( wiced_transport_type_t type )

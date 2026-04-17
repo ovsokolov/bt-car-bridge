@@ -14,7 +14,6 @@
   - `HFP_HF_INCLUDED=1`
   - `HFP_AG_INCLUDED=0`
 - PhoneConnect is now configured to stop building AVRCP Target in this HF workspace, keeping the phone-facing side aligned with `AVRCP CT + A2DP sink`.
-- The HF workspace now also carries explicit runtime `a2dp_profile_role` state so EIR and supported-group reporting can describe PhoneConnect as sink-oriented even though the inherited standalone module still uses a source-named compile flag.
 - HF media reconnect is now staged from real profile events instead of a blind timer chain:
   - pairing success can still start a full reconnect
   - HFP service reconnect advances the firmware to AVRCP CT reconnect
