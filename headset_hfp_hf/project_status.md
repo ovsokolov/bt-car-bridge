@@ -13,6 +13,11 @@
 - The workspace is configured for HF by default:
   - `HFP_HF_INCLUDED=1`
   - `HFP_AG_INCLUDED=0`
+- PhoneConnect is now configured to stop building AVRCP Target in this HF workspace, keeping the phone-facing side aligned with `AVRCP CT + A2DP sink`.
+- HF media reconnect is now staged from real profile events instead of a blind timer chain:
+  - pairing success can still start a full reconnect
+  - HFP service reconnect advances the firmware to AVRCP CT reconnect
+  - AVRCP CT reconnect advances the firmware to A2DP sink reconnect
 - LE, AMS, and ANCS are enabled by default.
 - PANU and PANNAP are disabled by default.
 - `libs/mtb.mk` and the `core-make` include are restored in the app `makefile`.
@@ -33,6 +38,7 @@
 - A full `make` validation was not completed in this session from plain PowerShell because:
   - `make` is not on `PATH` in the current shell
   - the bundled ModusToolbox Cygwin `make.exe` crashed in this session with a Windows permission or mapping error
+- Real hardware retest is still needed to confirm the new event-driven AVRCP and A2DP reconnect path after a board reboot.
 
 ## Suggested Next Step
 - Open the project from the proper ModusToolbox shell and run a clean non-destructive validation such as `make get_app_info` or `make build`.

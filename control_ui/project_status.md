@@ -17,6 +17,7 @@
 - The car-side panel is now intentionally minimal: inquiry remains visible, most profile buttons are removed, and a single `Pair Selected` action disconnects old links, removes the previous bond for the selected address, and starts a fresh AG bonding flow.
 - Numeric comparison and PIN pairing prompts are still handled through Tk dialogs when the firmware requests them.
 - In project notes, `client control`, `control client`, and `control UI` now mean `C:\BT_Projects\control_ui` unless the user explicitly says `OLD` or `REFERENCE`.
+- The log decoder now parses more profile-specific events into readable text, including HF indicator events and the address or handle layout used by AVRCP and A2DP connect events.
 - Logs are more readable and less hex-heavy, including AT-command text decoding and clearer profile and event wording.
 
 ## Validation

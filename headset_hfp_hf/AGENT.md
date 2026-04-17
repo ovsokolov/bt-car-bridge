@@ -38,6 +38,10 @@ The active Python host/control interface for this bridge is in `C:\BT_Projects\c
 - Default build role in this workspace is HF:
   - `HFP_HF_INCLUDED=1`
   - `HFP_AG_INCLUDED=0`
+- PhoneConnect should behave as the phone-facing media sink and AVRCP controller:
+  - `A2DP sink`
+  - `AVRCP CT`
+  - not `AVRCP TG` unless requirements explicitly change
 - Device name should remain `NavTool-PhoneConnect` unless requirements explicitly change.
 - Firmware now emits a custom bridge identity event so host tools can identify the board over serial.
 - Direct hardware audio between devkits is the design direction; UART is for control/logging only.
