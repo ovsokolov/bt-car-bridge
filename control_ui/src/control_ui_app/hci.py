@@ -106,6 +106,40 @@ SUPPORTED_GROUP_NAMES = {
     GROUP_AUDIO_SINK: "A2DP Sink",
 }
 
+HF_AT_EVENT_NAMES = {
+    0x00: "HF OK",
+    0x01: "HF Error",
+    0x02: "HF CME Error",
+    0x03: "HF Ring",
+    0x04: "HF Speaker Volume",
+    0x05: "HF Microphone Volume",
+    0x06: "HF Call Waiting",
+    0x07: "HF Call Hold",
+    0x08: "HF CIND",
+    0x09: "HF CLIP",
+    0x0A: "HF CIEV",
+    0x0B: "HF BINP",
+    0x0C: "HF BVRA",
+    0x0D: "HF BSIR",
+    0x0E: "HF CNUM",
+    0x0F: "HF BTRH",
+    0x10: "HF COPS",
+    0x11: "HF CLCC",
+    0x12: "HF BIND",
+    0x13: "HF BCS",
+    0x14: "HF Unknown AT",
+}
+
+HF_INDICATOR_NAMES = {
+    1: "service",
+    2: "call",
+    3: "call setup",
+    4: "call held",
+    5: "signal",
+    6: "roaming",
+    7: "battery",
+}
+
 STATUS_NAMES = {
     0: "Success",
     1: "In Progress",
@@ -318,7 +352,65 @@ def _handle_text(payload: bytes) -> str:
 
 
 def _status_name(code: int) -> str:
-    return STATUS_NAMES.get(code, f"Status {code}")
+    return f"{STATUS_NAMES.get(code, f'Status {code}')} (0x{code:02X})"
+
+
+def _group_name_with_code(group: int) -> str:
+    if group == GROUP_AUDIO:
+        return "A2DP Audio / Source group (0x05)"
+    return f"{SUPPORTED_GROUP_NAMES.get(group, f'Group {group}')} (0x{group:02X})"
+
+
+def _payload_hex(payload: bytes) -> str:
+    return " ".join(f"{value:02X}" for value in payload) if payload else "none"
+
+
+def _opcode_hex(opcode_value: int) -> str:
+    return f"0x{opcode_value:04X}"
+
+
+def _hf_at_payload(payload: bytes) -> tuple[str, int | None, str]:
+    handle = payload[0] | (payload[1] << 8) if len(payload) >= 2 else None
+    number = payload[2] | (payload[3] << 8) if len(payload) >= 4 else None
+    text = payload[4:].split(b"\x00", 1)[0].decode("utf-8", errors="ignore").strip() if len(payload) > 4 else ""
+    return (f"handle {handle}" if handle is not None else "handle unknown", number, text)
+
+
+def _decode_hf_at_event(opcode_value: int, payload: bytes) -> str | None:
+    if (opcode_value >> 8) != GROUP_HF:
+        return None
+    event_code = opcode_value & 0xFF
+    if event_code < 0x20 or event_code > 0x34:
+        return None
+
+    at_code = event_code - 0x20
+    event_name = HF_AT_EVENT_NAMES.get(at_code, f"HF AT Event 0x{at_code:02X}")
+    handle_text, number, text = _hf_at_payload(payload)
+    suffix = f"{event_name} ({_opcode_hex(opcode_value)})"
+
+    if at_code == 0x0A and text:
+        parts = [part.strip() for part in text.split(",", 1)]
+        if len(parts) == 2 and parts[0].isdigit() and parts[1].isdigit():
+            indicator_id = int(parts[0])
+            indicator_value = int(parts[1])
+            indicator_name = HF_INDICATOR_NAMES.get(indicator_id, f"indicator {indicator_id}")
+            return (
+                f"{suffix}: {handle_text}, {indicator_name}={indicator_value} "
+                f"(raw {text}; hex {_payload_hex(payload)})"
+            )
+    if at_code in {0x04, 0x05} and text:
+        volume_type = "speaker" if at_code == 0x04 else "microphone"
+        return f"{suffix}: {handle_text}, {volume_type} volume={text} (hex {_payload_hex(payload)})"
+    if at_code in {0x11, 0x12, 0x13}:
+        details = text or (str(number) if number is not None else "no details")
+        return f"{suffix}: {handle_text}, {details} (hex {_payload_hex(payload)})"
+    if at_code == 0x03:
+        return f"{suffix}: {handle_text} (hex {_payload_hex(payload)})"
+    if text:
+        return f"{suffix}: {handle_text}, {text} (hex {_payload_hex(payload)})"
+    if number is not None and number != 0:
+        return f"{suffix}: {handle_text}, value={number} (hex {_payload_hex(payload)})"
+    return f"{suffix}: {handle_text} (hex {_payload_hex(payload)})"
 
 
 def _codec_name(codec_id: int) -> str:
@@ -367,11 +459,14 @@ def decode_tx_message(opcode_value: int, payload: bytes) -> str:
 
 def decode_rx_message(opcode_value: int, payload: bytes) -> str:
     name = rx_opcode_name(opcode_value)
+    hf_at_message = _decode_hf_at_event(opcode_value, payload)
+    if hf_at_message is not None:
+        return hf_at_message
     if opcode_value == EVENT_DEVICE_STARTED:
         return "Board booted and HCI control is ready"
     if opcode_value == EVENT_MISC_VERSION:
         version, chip, groups = parse_version_payload(payload)
-        group_names = ", ".join(SUPPORTED_GROUP_NAMES.get(group, f"Group {group}") for group in groups)
+        group_names = ", ".join(_group_name_with_code(group) for group in groups)
         return f"Firmware version {version}, chip {chip}, supported groups: {group_names or 'none reported'}"
     if opcode_value == EVENT_MISC_BRIDGE_IDENTITY:
         identity = payload.decode("utf-8", errors="ignore").strip("\x00")
@@ -425,7 +520,7 @@ def decode_rx_message(opcode_value: int, payload: bytes) -> str:
         opcode(GROUP_AUDIO_SINK, 0x04),
         opcode(GROUP_AUDIO_SINK, 0x05),
     }:
-        return f"{name} on handle {_handle_text(payload)}"
+        return f"{name} ({_opcode_hex(opcode_value)}) on handle {_handle_text(payload)}"
     if opcode_value in {
         opcode(GROUP_AVRC_TARGET, 0x03),
         opcode(GROUP_AVRC_TARGET, 0x04),
@@ -440,17 +535,17 @@ def decode_rx_message(opcode_value: int, payload: bytes) -> str:
         opcode(GROUP_AVRC_CONTROLLER, 0xFF),
         opcode(GROUP_AVRC_TARGET, 0xFF),
     } and payload:
-        return f"{name}: {_status_name(payload[0])}"
+        return f"{name} ({_opcode_hex(opcode_value)}): {_status_name(payload[0])}"
     if opcode_value == opcode(GROUP_AUDIO_SINK, 0x08) and payload:
-        return f"A2DP sink codec configured: {_codec_name(payload[0])}"
+        return f"A2DP sink codec configured ({_opcode_hex(opcode_value)}): {_codec_name(payload[0])}"
     if opcode_value == opcode(GROUP_AUDIO_SINK, 0x09):
-        return "A2DP sink start requested"
+        return f"A2DP sink start requested ({_opcode_hex(opcode_value)})"
     if opcode_value == opcode(GROUP_AUDIO_SINK, 0x0B):
-        return "A2DP sink stream suspended"
+        return f"A2DP sink stream suspended ({_opcode_hex(opcode_value)})"
     if opcode_value == opcode(GROUP_AVRC_TARGET, 0x0C) and payload:
         percent = round((payload[0] / 127) * 100)
-        return f"AVRCP volume updated to about {percent}%"
+        return f"AVRCP volume updated to about {percent}% ({_opcode_hex(opcode_value)})"
     text = _ascii_text(payload)
     if text:
-        return f"{name}: {text}"
-    return f"{name} received ({len(payload)} bytes)"
+        return f"{name} ({_opcode_hex(opcode_value)}): {text} [hex: {_payload_hex(payload)}]"
+    return f"{name} ({_opcode_hex(opcode_value)}) received ({len(payload)} bytes, hex: {_payload_hex(payload)})"
