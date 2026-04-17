@@ -165,6 +165,7 @@ extern hci_control_cb_t *hci_control_cb_ptr;
 #endif
 
 extern uint8_t avrcp_profile_role;
+extern uint8_t a2dp_profile_role;
 extern uint8_t hfp_profile_role;
 
 /*****************************************************************************
