@@ -66,6 +66,7 @@
 #include "hci_control_le.h"
 #include "hci_control_hfp_hf.h"
 #include "hci_control_rc_controller.h"
+#include "hci_control_rc_target.h"
 #include "headset_nvram.h"
 #include "le_peripheral.h"
 #include "wiced_app_cfg.h"
@@ -124,6 +125,11 @@ static wiced_timer_t hf_autoreconnect_timer;
 static wiced_bt_device_address_t hf_autoreconnect_bda = {0};
 
 static hf_autoreconnect_stage_t hf_autoreconnect_stage = HF_AUTORECONNECT_IDLE;
+
+static const char *hf_autoreconnect_role_name(void)
+{
+    return (hfp_profile_role == HFP_AUDIO_GATEWAY_ROLE) ? "AG" : "HF";
+}
 
 /*
  * Application Start, ie, entry point to the application.
@@ -379,7 +385,8 @@ static void hf_schedule_autoreconnect_stage(const wiced_bt_device_address_t bd_a
     hf_autoreconnect_stage = stage;
     wiced_stop_timer(&hf_autoreconnect_timer);
     wiced_start_timer(&hf_autoreconnect_timer, delay_seconds);
-    WICED_BT_TRACE("[HF_AUTO] scheduled stage %d to <%B> in %lu sec\n",
+    WICED_BT_TRACE("[AUTO_%s] scheduled stage %d to <%B> in %lu sec\n",
+                   hf_autoreconnect_role_name(),
                    stage,
                    hf_autoreconnect_bda,
                    (unsigned long)delay_seconds);
@@ -406,11 +413,16 @@ static void hf_start_autoreconnect(const char *reason, uint32_t delay_seconds)
 
     if (!hf_get_last_bonded_device(bd_addr))
     {
-        WICED_BT_TRACE("[HF_AUTO] no bonded peer available for %s\n", reason);
+        WICED_BT_TRACE("[AUTO_%s] no bonded peer available for %s\n",
+                       hf_autoreconnect_role_name(),
+                       reason);
         return;
     }
 
-    WICED_BT_TRACE("[HF_AUTO] using bonded peer <%B> after %s\n", bd_addr, reason);
+    WICED_BT_TRACE("[AUTO_%s] using bonded peer <%B> after %s\n",
+                   hf_autoreconnect_role_name(),
+                   bd_addr,
+                   reason);
     hf_schedule_autoreconnect(bd_addr, delay_seconds);
 }
 
@@ -418,37 +430,101 @@ static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
 {
     uint8_t audio_format_cmd[2] = { AUDIO_SRC_AUDIO_DATA_FORMAT_PCM, AUDIO_ROUTE_I2S };
     wiced_result_t status = WICED_BT_SUCCESS;
+    hf_autoreconnect_stage_t next_stage = HF_AUTORECONNECT_IDLE;
 
     UNUSED_VARIABLE(arg);
 
     switch (hf_autoreconnect_stage)
     {
     case HF_AUTORECONNECT_HFP:
-        WICED_BT_TRACE("[HF_AUTO] connecting HFP HF to <%B>\n", hf_autoreconnect_bda);
-        status = wiced_bt_hfp_hf_connect(hf_autoreconnect_bda);
-        hf_autoreconnect_stage = HF_AUTORECONNECT_AVRCP;
+        if (hfp_profile_role == HFP_AUDIO_GATEWAY_ROLE)
+        {
+#ifdef WICED_APP_HFP_AG_INCLUDED
+            WICED_BT_TRACE("[AUTO_AG] connecting HFP AG to <%B>\n", hf_autoreconnect_bda);
+            hfp_ag_connect(hf_autoreconnect_bda);
+            status = WICED_BT_PENDING;
+#else
+            WICED_BT_TRACE("[AUTO_AG] HFP AG profile is not enabled in this build\n");
+            status = WICED_BT_UNSUPPORTED;
+#endif
+        }
+        else
+        {
+#ifdef WICED_APP_HFP_HF_INCLUDED
+            WICED_BT_TRACE("[AUTO_HF] connecting HFP HF to <%B>\n", hf_autoreconnect_bda);
+            status = wiced_bt_hfp_hf_connect(hf_autoreconnect_bda);
+#else
+            WICED_BT_TRACE("[AUTO_HF] HFP HF profile is not enabled in this build\n");
+            status = WICED_BT_UNSUPPORTED;
+#endif
+        }
+        next_stage = HF_AUTORECONNECT_AVRCP;
         break;
 
     case HF_AUTORECONNECT_AVRCP:
-        WICED_BT_TRACE("[HF_AUTO] connecting AVRCP CT to <%B>\n", hf_autoreconnect_bda);
-        status = wiced_bt_avrc_ct_connect(hf_autoreconnect_bda);
-        hf_autoreconnect_stage = HF_AUTORECONNECT_A2DP;
+        if (hfp_profile_role == HFP_AUDIO_GATEWAY_ROLE)
+        {
+#ifdef WICED_APP_AUDIO_RC_TG_INCLUDED
+            WICED_BT_TRACE("[AUTO_AG] connecting AVRCP TG to <%B>\n", hf_autoreconnect_bda);
+            wiced_bt_avrc_tg_initiate_open(hf_autoreconnect_bda);
+            status = WICED_BT_PENDING;
+#else
+            WICED_BT_TRACE("[AUTO_AG] AVRCP TG profile is not enabled in this build\n");
+            status = WICED_BT_UNSUPPORTED;
+#endif
+        }
+        else
+        {
+#ifdef WICED_APP_AUDIO_RC_CT_INCLUDED
+            WICED_BT_TRACE("[AUTO_HF] connecting AVRCP CT to <%B>\n", hf_autoreconnect_bda);
+            status = wiced_bt_avrc_ct_connect(hf_autoreconnect_bda);
+#else
+            WICED_BT_TRACE("[AUTO_HF] AVRCP CT profile is not enabled in this build\n");
+            status = WICED_BT_UNSUPPORTED;
+#endif
+        }
+        next_stage = HF_AUTORECONNECT_A2DP;
         break;
 
     case HF_AUTORECONNECT_A2DP:
-        WICED_BT_TRACE("[HF_AUTO] connecting A2DP sink to <%B> via I2S\n", hf_autoreconnect_bda);
-        hci_control_audio_handle_command(HCI_CONTROL_AUDIO_DATA_FORMAT,
-                                         audio_format_cmd,
-                                         sizeof(audio_format_cmd));
-        status = av_app_initiate_sdp(hf_autoreconnect_bda);
-        hf_autoreconnect_stage = HF_AUTORECONNECT_IDLE;
+        if (hfp_profile_role == HFP_AUDIO_GATEWAY_ROLE)
+        {
+#ifdef WICED_APP_AUDIO_SRC_INCLUDED
+            WICED_BT_TRACE("[AUTO_AG] connecting A2DP source to <%B>\n", hf_autoreconnect_bda);
+            status = av_app_initiate_sdp(hf_autoreconnect_bda);
+#else
+            WICED_BT_TRACE("[AUTO_AG] A2DP source profile is not enabled in this build\n");
+            status = WICED_BT_UNSUPPORTED;
+#endif
+        }
+        else
+        {
+#ifdef WICED_APP_AUDIO_SRC_INCLUDED
+            WICED_BT_TRACE("[AUTO_HF] connecting A2DP sink to <%B> via I2S\n", hf_autoreconnect_bda);
+            hci_control_audio_handle_command(HCI_CONTROL_AUDIO_DATA_FORMAT,
+                                             audio_format_cmd,
+                                             sizeof(audio_format_cmd));
+            status = av_app_initiate_sdp(hf_autoreconnect_bda);
+#else
+            WICED_BT_TRACE("[AUTO_HF] A2DP profile is not enabled in this build\n");
+            status = WICED_BT_UNSUPPORTED;
+#endif
+        }
+        next_stage = HF_AUTORECONNECT_IDLE;
         break;
 
     default:
         return;
     }
 
-    WICED_BT_TRACE("[HF_AUTO] stage result %d\n", status);
+    WICED_BT_TRACE("[AUTO_%s] stage result %d\n", hf_autoreconnect_role_name(), status);
+
+    hf_autoreconnect_stage = next_stage;
+    if (hf_autoreconnect_stage != HF_AUTORECONNECT_IDLE)
+    {
+        wiced_stop_timer(&hf_autoreconnect_timer);
+        wiced_start_timer(&hf_autoreconnect_timer, 1);
+    }
 }
 
 wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_management_evt_data_t *p_event_data)
@@ -695,7 +771,8 @@ wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data)
     wiced_init_timer(&hf_autoreconnect_timer, hf_autoreconnect_timer_cb, 0, WICED_SECONDS_TIMER);
     hf_start_autoreconnect("boot", 5);
 
-    WICED_BT_TRACE("Boot default keeps HF hidden; auto-reconnect will target the last bonded phone\n");
+    WICED_BT_TRACE("Boot default keeps BR/EDR hidden; auto-reconnect (%s role) will target the last bonded peer\n",
+                   hf_autoreconnect_role_name());
 
     return WICED_BT_SUCCESS;
 }
