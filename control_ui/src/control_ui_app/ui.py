@@ -287,6 +287,23 @@ class BridgeApp:
         pairable = widgets.pairable_var.get() if widgets.pairable_var is not None else True
         visible = widgets.visible_var.get() if widgets.visible_var is not None else True
         if self.phone_session.info.is_open:
+            identity = self.phone_session.info.bridge_identity.strip()
+            expected = EXPECTED_IDENTITIES["phone"]
+            target_port = self.phone_session.info.port or "<unknown port>"
+            if identity and identity != expected:
+                self.phone_session._log(
+                    f"Blocked phone pairing visibility command on {target_port} because identity is {identity}, expected {expected}"
+                )
+                messagebox.showwarning(
+                    "Wrong board on PhoneConnect",
+                    f"Phone pairing was blocked because the board opened in the PhoneConnect pane is:\n\n"
+                    f"{identity}\n\nExpected:\n{expected}\n\n"
+                    f"Target port: {target_port}",
+                )
+                return
+            self.phone_session._log(
+                f"Applying phone pairing visibility on {target_port} for identity {identity or expected}"
+            )
             self.phone_session.apply_pairable_visibility(pairable, visible)
         else:
             self.phone_session.info.last_status = (
