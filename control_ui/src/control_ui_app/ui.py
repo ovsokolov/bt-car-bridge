@@ -90,6 +90,7 @@ class BridgeApp:
             7: "5",
         }
         self._car_audio_open = False
+        self._pending_car_at_responses = 0
 
         self._build_ui()
         self.refresh_ports()
@@ -534,11 +535,23 @@ class BridgeApp:
         elif event_code == 0x13:
             self._send_car_result(f"+BCS: {number}", f"Phone HF +BCS {number} -> Car AG +BCS")
         elif event_code == 0x00:
-            self._send_car_result("OK", "Phone HF OK -> Car AG OK")
+            if self._pending_car_at_responses > 0:
+                self._pending_car_at_responses -= 1
+                self._send_car_result("OK", "Phone HF OK -> Car AG OK")
+            else:
+                self._bridge_trace("Ignored Phone HF OK because there is no pending car-side AT command")
         elif event_code == 0x01:
-            self._send_car_result("ERROR", "Phone HF ERROR -> Car AG ERROR")
+            if self._pending_car_at_responses > 0:
+                self._pending_car_at_responses -= 1
+                self._send_car_result("ERROR", "Phone HF ERROR -> Car AG ERROR")
+            else:
+                self._bridge_trace("Ignored Phone HF ERROR because there is no pending car-side AT command")
         elif event_code == 0x02:
-            self._send_car_result(f"+CME ERROR: {number}", f"Phone HF +CME ERROR {number} -> Car AG +CME ERROR")
+            if self._pending_car_at_responses > 0:
+                self._pending_car_at_responses -= 1
+                self._send_car_result(f"+CME ERROR: {number}", f"Phone HF +CME ERROR {number} -> Car AG +CME ERROR")
+            else:
+                self._bridge_trace("Ignored Phone HF +CME ERROR because there is no pending car-side AT command")
 
     def _bridge_car_packet(self, opcode_value: int, payload: bytes) -> None:
         if opcode_value == EVENT_AG_AUDIO_OPEN:
@@ -553,10 +566,12 @@ class BridgeApp:
             handle, at_text = self._parse_ag_at_payload(payload)
             if at_text:
                 self.phone_session.hf_send_raw_at(at_text)
+                self._pending_car_at_responses += 1
                 self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT {at_text}")
             return
         if opcode_value == EVENT_AG_CLCC_REQ:
             self.phone_session.hf_send_raw_at("AT+CLCC")
+            self._pending_car_at_responses += 1
             self._bridge_trace("Car AG CLCC request -> Phone HF raw AT AT+CLCC")
             return
         if opcode_value == opcode(GROUP_AVRC_TARGET, 0x03):
@@ -584,6 +599,9 @@ class BridgeApp:
         except ValueError:
             return (None, None)
         value = parts[1]
+        if not value.isdigit():
+            self._bridge_trace(f"Ignored Phone HF +CIEV {text} because value is not numeric")
+            return (None, None)
         self._phone_hf_cind[phone_index] = value
         ag_index = {1: 4, 2: 1, 3: 2, 4: 3, 5: 5, 6: 7, 7: 6}.get(phone_index)
         if ag_index is None:
@@ -617,7 +635,10 @@ class BridgeApp:
         values = [part.strip() for part in text.split(",")]
         if len(values) >= 7:
             for index, value in enumerate(values[:7], start=1):
-                self._phone_hf_cind[index] = value
+                if value.isdigit():
+                    self._phone_hf_cind[index] = value
+                else:
+                    self._bridge_trace(f"Ignored Phone HF +CIND value '{value}' at index {index} because it is not numeric")
         return self._current_ag_cind()
 
     def _current_ag_cind(self) -> str:
