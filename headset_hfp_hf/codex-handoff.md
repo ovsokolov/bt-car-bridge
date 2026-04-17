@@ -39,6 +39,17 @@
 - After each meaningful completed change, commit from `C:\BT_Projects` instead of leaving work uncommitted.
 - In the next session, start by checking `C:\BT_Projects` Git status so local commits continue consistently after restart.
 
+## Current Bridge Experiment
+- The latest bridge pass is intentionally incremental, not a full raw packet tunnel yet.
+- `control_ui` now forwards:
+  - car-side AG AT commands toward the phone-side HF link
+  - phone-side HF `RING` / `+CIEV` / `+CLIP` / `+CLCC` / `+CNUM` / `OK` / `ERROR` style events toward the car-side AG link
+  - car-side AVRCP target passthrough events to phone-side AVRCP controller commands
+  - HF/AG audio open-close events across the two boards
+- The UI bridge log now shows conversion-oriented lines such as phone-side indicator input mapped to car-side AG indicator output.
+- HF firmware now has a narrow custom host command in `hci_control_hfp_hf.c` for raw AT passthrough so the UI can forward car-issued HFP AT strings to the phone-facing HF connection.
+- A2DP is still only coordinated at the profile/control level from the UI. It is not raw media-packet forwarding.
+
 ## Notes
 - `AGENT.md` remained readable and should be treated as the most trustworthy local project note.
 - The rebuilt docs are intentionally minimal and factual so they can serve as a clean baseline after corruption.

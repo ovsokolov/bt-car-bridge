@@ -7,6 +7,18 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from typing import Callable, Optional
 
+from .hci import (
+    EVENT_AG_AT_CMD,
+    EVENT_AG_CLCC_REQ,
+    EVENT_AG_AUDIO_CLOSE,
+    EVENT_AG_AUDIO_OPEN,
+    EVENT_HF_AT_BASE,
+    EVENT_HF_AUDIO_CLOSE,
+    EVENT_HF_AUDIO_OPEN,
+    GROUP_AVRC_TARGET,
+    GROUP_HF,
+    opcode,
+)
 from .models import BridgeState, RemoteDevice
 from .session import SERIAL_IMPORT_ERROR, SerialBridgeSession, SerialPortInfo
 from .storage import apply_saved_state, save_state
@@ -67,6 +79,16 @@ class BridgeApp:
         }
 
         self.summary_var = tk.StringVar(value="Ready")
+        self._bridge_enabled = True
+        self._phone_hf_cind = {
+            1: "0",
+            2: "0",
+            3: "0",
+            4: "0",
+            5: "5",
+            6: "0",
+            7: "5",
+        }
 
         self._build_ui()
         self.refresh_ports()
@@ -408,8 +430,184 @@ class BridgeApp:
             )
             if pin:
                 session.reply_pin(payload["raw_bda"], pin)
+        elif kind == "packet":
+            self._handle_bridge_packet(side, payload)
         self._refresh_side(side)
         self._update_summary()
+
+    def _handle_bridge_packet(self, side: str, payload: dict) -> None:
+        if not self._bridge_enabled:
+            return
+        opcode_value = int(payload.get("opcode", 0))
+        raw_payload = payload.get("payload", b"")
+        if not isinstance(raw_payload, (bytes, bytearray)):
+            return
+        packet_payload = bytes(raw_payload)
+
+        if side == "phone":
+            self._bridge_phone_packet(opcode_value, packet_payload)
+        else:
+            self._bridge_car_packet(opcode_value, packet_payload)
+
+    def _bridge_phone_packet(self, opcode_value: int, payload: bytes) -> None:
+        if opcode_value == EVENT_HF_AUDIO_OPEN:
+            self._bridge_ag_audio("open")
+            return
+        if opcode_value == EVENT_HF_AUDIO_CLOSE:
+            self._bridge_ag_audio("close")
+            return
+        if opcode_value < EVENT_HF_AT_BASE or opcode_value >= opcode(GROUP_HF, 0x40):
+            return
+
+        handle, number, text = self._parse_value_payload(payload)
+        event_code = opcode_value & 0xFF
+
+        if event_code == 0x03:
+            self._send_car_result("RING", "Phone HF RING -> Car AG RING")
+        elif event_code == 0x04:
+            self._send_car_result(f"+VGS: {number}", f"Phone HF VGS={number} -> Car AG +VGS")
+        elif event_code == 0x05:
+            self._send_car_result(f"+VGM: {number}", f"Phone HF VGM={number} -> Car AG +VGM")
+        elif event_code == 0x08 and text:
+            ag_cind = self._convert_phone_cind_to_ag(text)
+            self.car_session.ag_set_cind(ag_cind)
+            self._bridge_trace(f"Phone HF +CIND {text} -> Car AG Set CIND {ag_cind}")
+            self._send_car_result(f"+CIND: {ag_cind}", f"Phone HF +CIND {text} -> Car AG +CIND {ag_cind}")
+        elif event_code == 0x09 and text:
+            clip = f'+CLIP: "{text}",{number}'
+            self._send_car_result(clip, f"Phone HF CLIP {text}/{number} -> Car AG {clip}")
+        elif event_code == 0x0A and text:
+            ag_index, value = self._bridge_phone_ciev_to_car(text)
+            if ag_index is not None:
+                self._send_car_result(
+                    f"+CIEV: {ag_index},{value}",
+                    f"Phone HF +CIEV {text} -> Car AG +CIEV {ag_index},{value}",
+                )
+        elif event_code == 0x0E and text:
+            self._send_car_result(f"+CNUM: {text}", f"Phone HF +CNUM {text} -> Car AG +CNUM")
+        elif event_code == 0x0F:
+            self._send_car_result(f"+BTRH: {number}", f"Phone HF +BTRH {number} -> Car AG +BTRH")
+        elif event_code == 0x10 and text:
+            self._send_car_result(f"+COPS: {text}", f"Phone HF +COPS {text} -> Car AG +COPS")
+        elif event_code == 0x11 and text:
+            self._send_car_result(f"+CLCC: {text}", f"Phone HF +CLCC {text} -> Car AG +CLCC")
+        elif event_code == 0x12 and text:
+            self._send_car_result(f"+BIND: {text}", f"Phone HF +BIND {text} -> Car AG +BIND")
+        elif event_code == 0x13:
+            self._send_car_result(f"+BCS: {number}", f"Phone HF +BCS {number} -> Car AG +BCS")
+        elif event_code == 0x00:
+            self._send_car_result("OK", "Phone HF OK -> Car AG OK")
+        elif event_code == 0x01:
+            self._send_car_result("ERROR", "Phone HF ERROR -> Car AG ERROR")
+        elif event_code == 0x02:
+            self._send_car_result(f"+CME ERROR: {number}", f"Phone HF +CME ERROR {number} -> Car AG +CME ERROR")
+
+    def _bridge_car_packet(self, opcode_value: int, payload: bytes) -> None:
+        if opcode_value == EVENT_AG_AUDIO_OPEN:
+            self._bridge_hf_audio("open")
+            return
+        if opcode_value == EVENT_AG_AUDIO_CLOSE:
+            self._bridge_hf_audio("close")
+            return
+        if opcode_value == EVENT_AG_AT_CMD:
+            handle, at_text = self._parse_ag_at_payload(payload)
+            if at_text:
+                self.phone_session.hf_send_raw_at(at_text)
+                self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT {at_text}")
+            return
+        if opcode_value == EVENT_AG_CLCC_REQ:
+            self.phone_session.hf_send_raw_at("AT+CLCC")
+            self._bridge_trace("Car AG CLCC request -> Phone HF raw AT AT+CLCC")
+            return
+        if opcode_value == opcode(GROUP_AVRC_TARGET, 0x03):
+            self.phone_session.avrc_play()
+            self._bridge_trace("Car AVRCP Play received -> Phone AVRCP Play command")
+        elif opcode_value == opcode(GROUP_AVRC_TARGET, 0x04):
+            self.phone_session.avrc_stop()
+            self._bridge_trace("Car AVRCP Stop received -> Phone AVRCP Stop command")
+        elif opcode_value == opcode(GROUP_AVRC_TARGET, 0x05):
+            self.phone_session.avrc_pause()
+            self._bridge_trace("Car AVRCP Pause received -> Phone AVRCP Pause command")
+        elif opcode_value == opcode(GROUP_AVRC_TARGET, 0x06):
+            self.phone_session.avrc_next()
+            self._bridge_trace("Car AVRCP Next received -> Phone AVRCP Next command")
+        elif opcode_value == opcode(GROUP_AVRC_TARGET, 0x07):
+            self.phone_session.avrc_prev()
+            self._bridge_trace("Car AVRCP Previous received -> Phone AVRCP Previous command")
+
+    def _bridge_phone_ciev_to_car(self, text: str) -> tuple[Optional[int], Optional[str]]:
+        parts = [part.strip() for part in text.split(",", 1)]
+        if len(parts) != 2:
+            return (None, None)
+        try:
+            phone_index = int(parts[0])
+        except ValueError:
+            return (None, None)
+        value = parts[1]
+        self._phone_hf_cind[phone_index] = value
+        ag_index = {1: 4, 2: 1, 3: 2, 4: 3, 5: 5, 6: 7, 7: 6}.get(phone_index)
+        if ag_index is None:
+            return (None, None)
+        self.car_session.ag_set_cind(self._current_ag_cind())
+        self._bridge_trace(
+            f"Phone HF +CIEV {phone_index},{value} -> Car AG indicator {ag_index},{value} | CIND {self._current_ag_cind()}"
+        )
+        return (ag_index, value)
+
+    def _convert_phone_cind_to_ag(self, text: str) -> str:
+        values = [part.strip() for part in text.split(",")]
+        if len(values) >= 7:
+            for index, value in enumerate(values[:7], start=1):
+                self._phone_hf_cind[index] = value
+        return self._current_ag_cind()
+
+    def _current_ag_cind(self) -> str:
+        return ",".join(
+            (
+                self._phone_hf_cind[2],
+                self._phone_hf_cind[3],
+                self._phone_hf_cind[4],
+                self._phone_hf_cind[1],
+                self._phone_hf_cind[5],
+                self._phone_hf_cind[7],
+                self._phone_hf_cind[6],
+            )
+        )
+
+    def _send_car_result(self, text: str, trace: str) -> None:
+        self.car_session.ag_send_string(text)
+        self._bridge_trace(trace)
+
+    def _bridge_hf_audio(self, action: str) -> None:
+        if action == "open":
+            self.phone_session.hf_audio_open()
+            self._bridge_trace("Car AG audio open -> Phone HF audio open")
+        else:
+            self.phone_session.hf_audio_close()
+            self._bridge_trace("Car AG audio close -> Phone HF audio close")
+
+    def _bridge_ag_audio(self, action: str) -> None:
+        if action == "open":
+            self.car_session.ag_audio_open()
+            self._bridge_trace("Phone HF audio open -> Car AG audio open")
+        else:
+            self.car_session.ag_audio_close()
+            self._bridge_trace("Phone HF audio close -> Car AG audio close")
+
+    def _parse_value_payload(self, payload: bytes) -> tuple[int, int, str]:
+        handle = payload[0] | (payload[1] << 8) if len(payload) >= 2 else 0
+        number = payload[2] | (payload[3] << 8) if len(payload) >= 4 else 0
+        text = payload[4:].split(b"\x00", 1)[0].decode("utf-8", errors="ignore") if len(payload) > 4 else ""
+        return (handle, number, text)
+
+    def _parse_ag_at_payload(self, payload: bytes) -> tuple[int, str]:
+        handle = payload[0] | (payload[1] << 8) if len(payload) >= 2 else 0
+        text = payload[2:].split(b"\x00", 1)[0].decode("utf-8", errors="ignore").strip()
+        return (handle, text)
+
+    def _bridge_trace(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._append_text(self.bridge_log, f"[{timestamp}] [Bridge] {message}\n")
 
     def _refresh_all_views(self) -> None:
         for side in self.sessions:

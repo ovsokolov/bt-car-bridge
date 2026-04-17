@@ -54,6 +54,8 @@
 
 #include "hci_control_audio.h"
 
+#define HCI_CONTROL_HF_COMMAND_SEND_RAW_AT ((HCI_CONTROL_GROUP_HF << 8) | 0x40)
+
 /******************************************************
  *               Variables Definitions
  ******************************************************/
@@ -745,6 +747,22 @@ void hci_control_hf_handle_command(uint16_t opcode, uint8_t* p_data, uint32_t le
         WICED_BT_TRACE("Send AT+BVRA=2\n");
         hci_control_hf_send_at_cmd(handsfree_ctxt_data.rfcomm_handle,"+BVRA",
                     WICED_BT_HFP_HF_AT_SET, WICED_BT_HFP_HF_AT_FMT_INT, NULL, 2);
+        break;
+
+    case HCI_CONTROL_HF_COMMAND_SEND_RAW_AT:
+        if (length >= 3)
+        {
+            uint8_t *data_ptr = (uint8_t *)wiced_bt_get_buffer(length + 1);
+            if (data_ptr != NULL)
+            {
+                memcpy(data_ptr, p, length);
+                data_ptr[length] = 0;
+                handle = data_ptr[0] | (data_ptr[1] << 8);
+                WICED_BT_TRACE("Forward raw HF AT on handle %u: %s\n", handle, (char *)(data_ptr + 2));
+                wiced_bt_hfp_hf_send_at_cmd(handle, (char *)(data_ptr + 2));
+                wiced_bt_free_buffer((void *)data_ptr);
+            }
+        }
         break;
 
     default:

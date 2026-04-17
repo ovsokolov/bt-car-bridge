@@ -33,6 +33,17 @@
 - A full `make` validation was not completed in this session from plain PowerShell because:
   - `make` is not on `PATH` in the current shell
   - the bundled ModusToolbox Cygwin `make.exe` crashed in this session with a Windows permission or mapping error
+- The new bridge pass has only host-level and selective firmware forwarding so far:
+  - HFP bridging is semantic and AT/result based
+  - AVRCP bridging is passthrough-command based where events are exposed
+  - A2DP is still connect/control orchestration only, not transparent media forwarding
+
+## Current Bridge Path
+- `control_ui` now contains the first explicit two-board bridge logic.
+- Phone-side HF events are converted into AG-side indicators/result strings for the car board.
+- Car-side AG AT requests are forwarded to the phone-side HF link.
+- HF firmware now accepts a custom raw AT passthrough command from the host in `mtb-example-btsdk-audio-headset-standalone/hci_control_hfp_hf.c`.
+- This needs hardware validation with both boards connected because the bridge logic is now stateful and conversion-heavy.
 
 ## Suggested Next Step
 - Open the project from the proper ModusToolbox shell and run a clean non-destructive validation such as `make get_app_info` or `make build`.

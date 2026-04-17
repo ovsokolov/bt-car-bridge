@@ -10,6 +10,8 @@ from .hci import (
     COMMAND_AG_CONNECT,
     COMMAND_AG_DISCONNECT,
     COMMAND_AG_OPEN_AUDIO,
+    COMMAND_AG_SEND_STRING,
+    COMMAND_AG_SET_CIND,
     COMMAND_AUDIO_SINK_CONNECT,
     COMMAND_AUDIO_SINK_DISCONNECT,
     COMMAND_AUDIO_SRC_CONNECT,
@@ -29,6 +31,7 @@ from .hci import (
     COMMAND_HF_CONNECT,
     COMMAND_HF_DISCONNECT,
     COMMAND_HF_OPEN_AUDIO,
+    COMMAND_HF_SEND_RAW_AT,
     COMMAND_INQUIRY,
     COMMAND_PIN_REPLY,
     COMMAND_READ_LOCAL_BDA,
@@ -52,6 +55,7 @@ from .hci import (
     decode_eir_name,
     decode_rx_message,
     decode_tx_message,
+    encode_handle_text,
     encode_pin_reply,
     encode_user_confirmation_reply,
     encode_wiced_command,
@@ -233,6 +237,8 @@ class SerialBridgeSession:
             self.info.ag_connected = False
             self.info.avrc_connected = False
             self.info.a2dp_connected = False
+            self.info.service_handle = 0
+            self.info.avrc_handle = 0
             self.info.last_status = "Closed"
             self._emit("state", status=self.info.last_status)
             if not already_closed:
@@ -278,26 +284,69 @@ class SerialBridgeSession:
         self.send(COMMAND_HF_CONNECT, bd_addr_to_command(address))
 
     def hf_disconnect(self) -> None:
-        self.send(COMMAND_HF_DISCONNECT)
+        payload = b""
+        if self.info.service_handle > 0:
+            payload = bytes([self.info.service_handle & 0xFF, (self.info.service_handle >> 8) & 0xFF])
+        self.send(COMMAND_HF_DISCONNECT, payload)
 
     def hf_audio_open(self) -> None:
-        self.send(COMMAND_HF_OPEN_AUDIO)
+        payload = b""
+        if self.info.service_handle > 0:
+            payload = bytes([self.info.service_handle & 0xFF, (self.info.service_handle >> 8) & 0xFF])
+        self.send(COMMAND_HF_OPEN_AUDIO, payload)
 
     def hf_audio_close(self) -> None:
-        self.send(COMMAND_HF_CLOSE_AUDIO)
+        payload = b""
+        if self.info.service_handle > 0:
+            payload = bytes([self.info.service_handle & 0xFF, (self.info.service_handle >> 8) & 0xFF])
+        self.send(COMMAND_HF_CLOSE_AUDIO, payload)
+
+    def hf_send_raw_at(self, text: str, handle: Optional[int] = None) -> None:
+        rfcomm_handle = handle if handle is not None else self.info.service_handle
+        if rfcomm_handle <= 0:
+            self._log("Cannot send HF AT because no HF service handle is available")
+            return
+        command_text = text.strip()
+        if not command_text:
+            self._log("Cannot send an empty HF AT command")
+            return
+        if not command_text.upper().startswith("AT"):
+            command_text = f"AT{command_text}"
+        if not command_text.endswith("\r"):
+            command_text += "\r"
+        self.send(COMMAND_HF_SEND_RAW_AT, encode_handle_text(rfcomm_handle, command_text))
 
     def ag_connect(self, address: str) -> None:
         self._remember_remote(address)
         self.send(COMMAND_AG_CONNECT, bd_addr_to_command(address))
 
     def ag_disconnect(self) -> None:
-        self.send(COMMAND_AG_DISCONNECT)
+        payload = b""
+        if self.info.service_handle > 0:
+            payload = bytes([self.info.service_handle & 0xFF, (self.info.service_handle >> 8) & 0xFF])
+        self.send(COMMAND_AG_DISCONNECT, payload)
 
     def ag_audio_open(self) -> None:
-        self.send(COMMAND_AG_OPEN_AUDIO)
+        payload = b""
+        if self.info.service_handle > 0:
+            payload = bytes([self.info.service_handle & 0xFF, (self.info.service_handle >> 8) & 0xFF])
+        self.send(COMMAND_AG_OPEN_AUDIO, payload)
 
     def ag_audio_close(self) -> None:
-        self.send(COMMAND_AG_CLOSE_AUDIO)
+        payload = b""
+        if self.info.service_handle > 0:
+            payload = bytes([self.info.service_handle & 0xFF, (self.info.service_handle >> 8) & 0xFF])
+        self.send(COMMAND_AG_CLOSE_AUDIO, payload)
+
+    def ag_set_cind(self, cind_values: str) -> None:
+        self.send(COMMAND_AG_SET_CIND, cind_values.encode("ascii", errors="ignore"))
+
+    def ag_send_string(self, text: str, handle: Optional[int] = None) -> None:
+        app_handle = handle if handle is not None else self.info.service_handle
+        if app_handle <= 0:
+            self._log("Cannot send AG text because no AG service handle is available")
+            return
+        self.send(COMMAND_AG_SEND_STRING, encode_handle_text(app_handle, text))
 
     def a2dp_sink_connect(self, address: str) -> None:
         self._remember_remote(address)
@@ -577,21 +626,30 @@ class SerialBridgeSession:
             )
         elif packet.opcode == opcode(0x03, 0x03):
             self.info.ag_connected = True
+            if len(packet.payload) >= 2:
+                self.info.service_handle = packet.payload[0] | (packet.payload[1] << 8)
             self.info.last_status = "HF service connected"
         elif packet.opcode == opcode(0x03, 0x04):
             self.info.ag_connected = False
+            self.info.service_handle = 0
             self.info.last_status = "HF service disconnected"
         elif packet.opcode == opcode(0x0E, 0x03):
             self.info.ag_connected = True
+            if len(packet.payload) >= 2:
+                self.info.service_handle = packet.payload[0] | (packet.payload[1] << 8)
             self.info.last_status = "AG service connected"
         elif packet.opcode == opcode(0x0E, 0x02):
             self.info.ag_connected = False
+            self.info.service_handle = 0
             self.info.last_status = "AG service disconnected"
         elif packet.opcode in {opcode(0x11, 0x01), opcode(0x07, 0x01)}:
             self.info.avrc_connected = True
+            if len(packet.payload) >= 8:
+                self.info.avrc_handle = packet.payload[6] | (packet.payload[7] << 8)
             self.info.last_status = "AVRCP connected"
         elif packet.opcode in {opcode(0x11, 0x02), opcode(0x07, 0x02)}:
             self.info.avrc_connected = False
+            self.info.avrc_handle = 0
             self.info.last_status = "AVRCP disconnected"
         elif packet.opcode in {opcode(0x05, 0x02), opcode(0x14, 0x02)}:
             self.info.a2dp_connected = True
@@ -612,6 +670,7 @@ class SerialBridgeSession:
             self.info.last_status = "Inquiry complete"
 
         self._emit("state", status=self.info.last_status)
+        self._emit("packet", opcode=packet.opcode, payload=packet.payload, message=message)
 
     def _remember_remote(self, address: str) -> None:
         self.info.preferred_remote_address = address

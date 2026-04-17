@@ -39,6 +39,8 @@ class SessionInfo:
     ag_connected: bool = False
     avrc_connected: bool = False
     a2dp_connected: bool = False
+    service_handle: int = 0
+    avrc_handle: int = 0
     media_retry_count: int = 0
     ag_last_activity_at: float = 0.0
     a2dp_retry_job_active: bool = False

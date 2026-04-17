@@ -47,11 +47,14 @@ COMMAND_HF_CONNECT = opcode(GROUP_HF, 0x01)
 COMMAND_HF_DISCONNECT = opcode(GROUP_HF, 0x02)
 COMMAND_HF_OPEN_AUDIO = opcode(GROUP_HF, 0x03)
 COMMAND_HF_CLOSE_AUDIO = opcode(GROUP_HF, 0x04)
+COMMAND_HF_SEND_RAW_AT = opcode(GROUP_HF, 0x40)
 
 COMMAND_AG_CONNECT = opcode(GROUP_AG, 0x01)
 COMMAND_AG_DISCONNECT = opcode(GROUP_AG, 0x02)
 COMMAND_AG_OPEN_AUDIO = opcode(GROUP_AG, 0x03)
 COMMAND_AG_CLOSE_AUDIO = opcode(GROUP_AG, 0x04)
+COMMAND_AG_SET_CIND = opcode(GROUP_AG, 0x05)
+COMMAND_AG_SEND_STRING = opcode(GROUP_AG, 0x06)
 
 COMMAND_AVRC_CT_CONNECT = opcode(GROUP_AVRC_CONTROLLER, 0x01)
 COMMAND_AVRC_CT_DISCONNECT = opcode(GROUP_AVRC_CONTROLLER, 0x02)
@@ -73,6 +76,13 @@ EVENT_AG_CONNECTED = opcode(GROUP_AG, 0x03)
 EVENT_AG_AUDIO_OPEN = opcode(GROUP_AG, 0x04)
 EVENT_AG_AUDIO_CLOSE = opcode(GROUP_AG, 0x05)
 EVENT_AG_AT_CMD = opcode(GROUP_AG, 0x06)
+EVENT_AG_CLCC_REQ = opcode(GROUP_AG, 0x07)
+
+EVENT_HF_CONNECTED = opcode(GROUP_HF, 0x03)
+EVENT_HF_DISCONNECTED = opcode(GROUP_HF, 0x04)
+EVENT_HF_AUDIO_OPEN = opcode(GROUP_HF, 0x05)
+EVENT_HF_AUDIO_CLOSE = opcode(GROUP_HF, 0x06)
+EVENT_HF_AT_BASE = opcode(GROUP_HF, 0x20)
 
 EVENT_AVRC_TG_CONNECTED = opcode(GROUP_AVRC_TARGET, 0x01)
 EVENT_AVRC_TG_DISCONNECTED = opcode(GROUP_AVRC_TARGET, 0x02)
@@ -171,10 +181,13 @@ TX_OPCODE_NAMES = {
     COMMAND_HF_DISCONNECT: "HF Disconnect",
     COMMAND_HF_OPEN_AUDIO: "HF Audio Open",
     COMMAND_HF_CLOSE_AUDIO: "HF Audio Close",
+    COMMAND_HF_SEND_RAW_AT: "HF Raw AT",
     COMMAND_AG_CONNECT: "AG Connect",
     COMMAND_AG_DISCONNECT: "AG Disconnect",
     COMMAND_AG_OPEN_AUDIO: "AG Audio Open",
     COMMAND_AG_CLOSE_AUDIO: "AG Audio Close",
+    COMMAND_AG_SET_CIND: "AG Set CIND",
+    COMMAND_AG_SEND_STRING: "AG Send String",
     COMMAND_AVRC_CT_CONNECT: "AVRCP CT Connect",
     COMMAND_AVRC_CT_DISCONNECT: "AVRCP CT Disconnect",
     COMMAND_AVRC_CT_PLAY: "AVRCP Play",
@@ -215,6 +228,7 @@ RX_OPCODE_NAMES = {
     opcode(GROUP_AG, 0x04): "AG Audio Open",
     opcode(GROUP_AG, 0x05): "AG Audio Close",
     opcode(GROUP_AG, 0x06): "AG AT Command",
+    opcode(GROUP_AG, 0x07): "AG CLCC Request",
     opcode(GROUP_AVRC_CONTROLLER, 0x01): "AVRCP CT Connected",
     opcode(GROUP_AVRC_CONTROLLER, 0x02): "AVRCP CT Disconnected",
     opcode(GROUP_AVRC_CONTROLLER, 0x03): "AVRCP Track Info",
@@ -322,6 +336,11 @@ def encode_user_confirmation_reply(raw_bda: bytes, accepted: bool) -> bytes:
 def encode_pin_reply(raw_bda: bytes, pin: str) -> bytes:
     encoded = pin.encode("ascii", errors="ignore")[:16]
     return bytes(reversed(raw_bda)) + bytes([len(encoded)]) + encoded
+
+
+def encode_handle_text(handle: int, text: str) -> bytes:
+    encoded = text.encode("ascii", errors="ignore")
+    return bytes([handle & 0xFF, (handle >> 8) & 0xFF]) + encoded
 
 
 def tx_opcode_name(opcode_value: int) -> str:
@@ -520,6 +539,8 @@ def decode_rx_message(opcode_value: int, payload: bytes) -> str:
     if opcode_value == EVENT_AG_AT_CMD:
         at_text = _find_at_text(payload)
         return f"Phone AT command: {at_text or 'received'}"
+    if opcode_value == EVENT_AG_CLCC_REQ:
+        return f"Car requested current call list on handle {_handle_text(payload)}"
     if opcode_value in {
         opcode(GROUP_HF, 0x03),
         opcode(GROUP_HF, 0x04),
