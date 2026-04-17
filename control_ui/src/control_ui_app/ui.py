@@ -277,7 +277,10 @@ class BridgeApp:
             widgets.pairable_var.set(True)
         if widgets.visible_var is not None:
             widgets.visible_var.set(True)
-        self.apply_phone_flags()
+        if self.phone_session.info.is_open:
+            self.phone_session.enable_phone_pairing()
+        else:
+            self.apply_phone_flags()
 
     def pair_selected_car_device(self) -> None:
         device = self._selected_device("car")
