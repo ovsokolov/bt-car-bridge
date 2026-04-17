@@ -89,6 +89,7 @@ class BridgeApp:
             6: "0",
             7: "5",
         }
+        self._car_audio_open = False
 
         self._build_ui()
         self.refresh_ports()
@@ -486,7 +487,7 @@ class BridgeApp:
             return
 
         handle, number, text = self._parse_value_payload(payload)
-        event_code = opcode_value & 0xFF
+        event_code = opcode_value - EVENT_HF_AT_BASE
 
         if event_code == 0x03:
             self._bridge_phone_incoming_call_hint()
@@ -533,9 +534,11 @@ class BridgeApp:
 
     def _bridge_car_packet(self, opcode_value: int, payload: bytes) -> None:
         if opcode_value == EVENT_AG_AUDIO_OPEN:
+            self._car_audio_open = True
             self._bridge_hf_audio("open")
             return
         if opcode_value == EVENT_AG_AUDIO_CLOSE:
+            self._car_audio_open = False
             self._bridge_hf_audio("close")
             return
         if opcode_value == EVENT_AG_AT_CMD:
@@ -642,6 +645,9 @@ class BridgeApp:
             self._bridge_trace(f"Skipped Car AG audio {action} because no AG service handle is available yet")
             return
         if action == "open":
+            if self._car_audio_open:
+                self._bridge_trace("Skipped Car AG audio open because AG audio is already open")
+                return
             self.car_session.ag_audio_open()
             self._bridge_trace("Phone HF audio open -> Car AG audio open")
         else:
