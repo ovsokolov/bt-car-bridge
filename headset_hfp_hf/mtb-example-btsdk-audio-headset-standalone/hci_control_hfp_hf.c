@@ -46,7 +46,6 @@
 #include "wiced_transport.h"
 #include "wiced_memory.h"
 #include "hci_control.h"
-#include "wiced_app.h"
 #if defined(CYW20721B2) || defined(CYW43012C0)
 #define HFP_VOLUME_HIGH 15
 #include "wiced_audio_manager.h"
@@ -199,7 +198,6 @@ static void handsfree_connection_event_handler(wiced_bt_hfp_hf_event_data_t* p_d
 
         status = wiced_bt_sco_create_as_acceptor(&handsfree_ctxt_data.sco_index);
         WICED_BT_TRACE("%s: status [%d] SCO INDEX [%d] \n", __func__, status, handsfree_ctxt_data.sco_index);
-        hf_autoreconnect_continue_from_hfp(p_data->conn_data.remote_address, 1);
     }
     else if(p_data->conn_data.conn_state == WICED_BT_HFP_HF_STATE_SLC_CONNECTED)
     {

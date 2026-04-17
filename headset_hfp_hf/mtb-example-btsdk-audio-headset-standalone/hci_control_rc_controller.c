@@ -44,7 +44,6 @@
 #include "hci_control.h"
 #include "hci_control_rc_controller.h"
 #include "app.h"
-#include "wiced_app.h"
 
 /******************************************************************************
  *                          Constants
@@ -331,7 +330,6 @@ void avrc_connection_state_cback( uint8_t handle,  wiced_bt_device_address_t rem
         /* Inform the MCU of the connection */
         hci_control_avrc_send_connect_complete( remote_addr, WICED_SUCCESS, handle );
         rc_app_cb.handle = handle;
-        hf_autoreconnect_continue_from_avrcp(remote_addr, 1);
 
         break;
 

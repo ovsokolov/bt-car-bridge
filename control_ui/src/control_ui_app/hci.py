@@ -351,27 +351,6 @@ def _handle_text(payload: bytes) -> str:
     return "unknown"
 
 
-def _decode_addr_handle(payload: bytes) -> tuple[str | None, int | None]:
-    if len(payload) >= 8:
-        address = bd_addr_to_display(reversed(payload[:6]))
-        handle = payload[6] | (payload[7] << 8)
-        return (address, handle)
-    if len(payload) >= 2:
-        return (None, payload[0] | (payload[1] << 8))
-    return (None, None)
-
-
-def _decode_addr_status_handle(payload: bytes) -> tuple[str | None, int | None, int | None]:
-    if len(payload) >= 9:
-        address = bd_addr_to_display(reversed(payload[:6]))
-        status = payload[6]
-        handle = payload[7] | (payload[8] << 8)
-        return (address, status, handle)
-    if len(payload) >= 2:
-        return (None, None, payload[0] | (payload[1] << 8))
-    return (None, None, None)
-
-
 def _status_name(code: int) -> str:
     return f"{STATUS_NAMES.get(code, f'Status {code}')} (0x{code:02X})"
 
@@ -530,37 +509,18 @@ def decode_rx_message(opcode_value: int, payload: bytes) -> str:
         opcode(GROUP_AG, 0x03),
         opcode(GROUP_AG, 0x04),
         opcode(GROUP_AG, 0x05),
+        opcode(GROUP_AVRC_CONTROLLER, 0x01),
         opcode(GROUP_AVRC_CONTROLLER, 0x02),
+        opcode(GROUP_AVRC_TARGET, 0x01),
         opcode(GROUP_AVRC_TARGET, 0x02),
+        opcode(GROUP_AUDIO, 0x02),
+        opcode(GROUP_AUDIO, 0x04),
         opcode(GROUP_AUDIO, 0x05),
+        opcode(GROUP_AUDIO_SINK, 0x02),
         opcode(GROUP_AUDIO_SINK, 0x04),
         opcode(GROUP_AUDIO_SINK, 0x05),
     }:
         return f"{name} ({_opcode_hex(opcode_value)}) on handle {_handle_text(payload)}"
-    if opcode_value in {
-        opcode(GROUP_AVRC_TARGET, 0x01),
-        opcode(GROUP_AUDIO, 0x02),
-        opcode(GROUP_AUDIO_SINK, 0x02),
-    }:
-        address, handle = _decode_addr_handle(payload)
-        details = []
-        if address:
-            details.append(f"peer {address}")
-        if handle is not None:
-            details.append(f"handle {handle}")
-        if opcode_value == opcode(GROUP_AUDIO, 0x02) and len(payload) >= 9:
-            details.append(f"absolute-volume-capable={'yes' if payload[8] else 'no'}")
-        return f"{name} ({_opcode_hex(opcode_value)}): {', '.join(details) or f'hex {_payload_hex(payload)}'}"
-    if opcode_value == opcode(GROUP_AVRC_CONTROLLER, 0x01):
-        address, status, handle = _decode_addr_status_handle(payload)
-        details = []
-        if address:
-            details.append(f"peer {address}")
-        if status is not None:
-            details.append(f"status {_status_name(status)}")
-        if handle is not None:
-            details.append(f"handle {handle}")
-        return f"{name} ({_opcode_hex(opcode_value)}): {', '.join(details) or f'hex {_payload_hex(payload)}'}"
     if opcode_value in {
         opcode(GROUP_AVRC_TARGET, 0x03),
         opcode(GROUP_AVRC_TARGET, 0x04),

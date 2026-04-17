@@ -7,7 +7,6 @@
 - The phone-side panel is now reduced to a minimal HF workflow: open the board, then use one `Enable Phone Pairing` action when you want the phone to initiate pairing.
 - The car-side panel is now reduced to inquiry plus one `Pair Selected` action that disconnects old links, removes the previous bond for that address, and starts a fresh AG bond while still honoring PIN and numeric-comparison prompts.
 - In project notes, `client control`, `control client`, and `control UI` now refer to `C:\BT_Projects\control_ui` unless the user explicitly says `OLD` or `REFERENCE`.
-- `hci.py` now decodes more raw profile events into readable text and correctly parses the payload layout for AVRCP and A2DP connection events so logs no longer invent garbage handles from the peer address bytes.
 
 ## Current Operator Flow
 - Use the per-side port dropdown and look for labels such as:

@@ -4,7 +4,6 @@
 - The app `makefile` became corrupted and was replaced with a fresh text version.
 - `project_status.md` and `codex-handoff.md` were also found to be NUL-filled and unreadable.
 - This handoff file is a clean restart point built from the current repo state and `AGENT.md`.
-- The HF workspace was then adjusted to stop building AVRCP Target on PhoneConnect and to resume media reconnect in response to HFP and AVRCP connection events instead of only using a fixed timer chain.
 
 ## Current Understanding
 - This repo is the HF side of the bridge system for `CYBT-343026-EVAL`.
@@ -18,8 +17,6 @@
 - `TARGET=CYBT-343026-EVAL`
 - `HFP_HF_INCLUDED=1`
 - `HFP_AG_INCLUDED=0`
-- `AVRCP_CT_INCLUDED=1`
-- `AVRCP_TG_INCLUDED=0`
 - `LE_INCLUDED=1`
 - `ANCS_INCLUDED=1`
 - `AMS_INCLUDED=1`
@@ -34,8 +31,7 @@
 - `mtb-example-btsdk-audio-headset-standalone/build/get_app_info.txt`
 
 ## Practical Next Actions
-- Validate the rebuilt `makefile` and the revised HF reconnect behavior from the real ModusToolbox shell.
-- On hardware, reboot PhoneConnect after an initial successful phone pairing and confirm that HFP reconnect is followed by AVRCP CT reconnect and then A2DP sink reconnect.
+- Validate the rebuilt `makefile` from the real ModusToolbox shell.
 - If the user wants bridge behavior changes, compare this repo with:
   - `C:\BT_Projects\headset_hfp_ag`
   - `C:\BT_Projects\control_ui`
