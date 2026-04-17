@@ -263,18 +263,7 @@ class SerialBridgeSession:
         )
 
     def enable_phone_pairing(self) -> None:
-        if not self.info.is_open:
-            self._log("Open the phone-side serial session before enabling phone pairing")
-            return
-        if self._sequence_thread is not None and self._sequence_thread.is_alive():
-            self._log("Another scripted sequence is already running on this side")
-            return
-        self._sequence_thread = threading.Thread(
-            target=self._run_phone_pairing_enable_sequence,
-            name=f"phone-pairing-{self.info.label}",
-            daemon=True,
-        )
-        self._sequence_thread.start()
+        self.apply_pairable_visibility(True, True)
 
     def bond(self, address: str) -> None:
         self._remember_remote(address)
@@ -453,24 +442,6 @@ class SerialBridgeSession:
                 self._log("AG one-click pair interrupted while waiting for the next step")
                 return
         self._log("AG one-click pair finished; respond to any PIN or numeric comparison prompts if shown")
-
-    def _run_phone_pairing_enable_sequence(self) -> None:
-        steps: list[tuple[str, Callable[[], None], float]] = [
-            ("Enabling phone-side pairable mode", lambda: self.set_pairing_mode(True), 0.25),
-            ("Making phone-side board discoverable and connectable", lambda: self.set_visibility(True, True), 0.4),
-            ("Refreshing phone-side discoverable state", lambda: self.set_visibility(True, True), 0.0),
-        ]
-        self._log("Starting phone pairing visibility sequence")
-        for label, action, wait_seconds in steps:
-            if self._stop_event.is_set() or not self.info.is_open:
-                self._log("Phone pairing visibility sequence stopped because the session was closed")
-                return
-            self._log(label)
-            action()
-            if wait_seconds > 0 and self._stop_event.wait(wait_seconds):
-                self._log("Phone pairing visibility sequence interrupted while waiting for the next step")
-                return
-        self._log("Phone pairing visibility sequence finished")
 
     def send(self, opcode_value: int, payload: bytes = b"") -> bool:
         if not self.info.is_open or self._serial is None:
