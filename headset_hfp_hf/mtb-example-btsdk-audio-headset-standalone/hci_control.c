@@ -1154,6 +1154,9 @@ void hci_control_inquiry( uint8_t enable )
  */
 void hci_control_handle_set_visibility( uint8_t discoverability, uint8_t connectability )
 {
+    wiced_result_t disc_result;
+    wiced_result_t conn_result;
+
     // we cannot be discoverable and not connectable
     if ( ( ( discoverability != 0 ) && ( connectability == 0 ) ) ||
            ( discoverability > 1 ) ||
@@ -1163,15 +1166,36 @@ void hci_control_handle_set_visibility( uint8_t discoverability, uint8_t connect
     }
     else
     {
-        wiced_bt_dev_set_discoverability( ( discoverability != 0 ) ? BTM_GENERAL_DISCOVERABLE : BTM_NON_DISCOVERABLE ,
-                                            BTM_DEFAULT_DISC_WINDOW,
-                                            BTM_DEFAULT_DISC_INTERVAL);
+        if (discoverability != 0)
+        {
+            /* Refresh the BR/EDR inquiry payload right before enabling visibility so
+             * the phone sees the current service set in inquiry results. */
+            hci_control_write_eir();
+        }
 
-        wiced_bt_dev_set_connectability( ( connectability != 0 ) ? WICED_TRUE : WICED_FALSE ,
-                                            BTM_DEFAULT_CONN_WINDOW,
-                                            BTM_DEFAULT_CONN_INTERVAL);
+        disc_result = wiced_bt_dev_set_discoverability(
+            ( discoverability != 0 ) ? BTM_GENERAL_DISCOVERABLE : BTM_NON_DISCOVERABLE,
+            wiced_bt_cfg_settings.br_edr_scan_cfg.inquiry_scan_window,
+            wiced_bt_cfg_settings.br_edr_scan_cfg.inquiry_scan_interval);
 
-        hci_control_send_command_status_evt( HCI_CONTROL_EVENT_COMMAND_STATUS, HCI_CONTROL_STATUS_SUCCESS );
+        conn_result = wiced_bt_dev_set_connectability(
+            ( connectability != 0 ) ? WICED_TRUE : WICED_FALSE,
+            wiced_bt_cfg_settings.br_edr_scan_cfg.page_scan_window,
+            wiced_bt_cfg_settings.br_edr_scan_cfg.page_scan_interval);
+
+        WICED_BT_TRACE("[%s] discoverable=%d connectable=%d disc_result=0x%x conn_result=0x%x pairing_allowed=%d\n",
+                       __FUNCTION__,
+                       discoverability,
+                       connectability,
+                       disc_result,
+                       conn_result,
+                       hci_control_cb.pairing_allowed);
+
+        hci_control_send_command_status_evt(
+            HCI_CONTROL_EVENT_COMMAND_STATUS,
+            (disc_result == WICED_BT_SUCCESS && conn_result == WICED_BT_SUCCESS)
+                ? HCI_CONTROL_STATUS_SUCCESS
+                : HCI_CONTROL_STATUS_FAILED);
     }
 }
 
