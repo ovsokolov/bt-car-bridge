@@ -213,7 +213,7 @@ class BridgeApp:
             actions.pack(fill=tk.X, pady=(0, 6))
             ttk.Button(actions, text="Start Inquiry", command=self.car_session.start_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
             ttk.Button(actions, text="Stop Inquiry", command=self.car_session.stop_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
-            ttk.Button(actions, text="Pair Selected", command=self.pair_selected_car_device).pack(side=tk.LEFT, padx=(0, 4), pady=2)
+            ttk.Button(actions, text="Connect Selected", command=self.pair_selected_car_device).pack(side=tk.LEFT, padx=(0, 4), pady=2)
 
         content = ttk.Panedwindow(frame, orient=tk.HORIZONTAL if side == "car" else tk.VERTICAL)
         content.pack(fill=tk.BOTH, expand=True)
@@ -286,6 +286,8 @@ class BridgeApp:
         if self.sessions[side].open(port):
             if side == "phone":
                 self.apply_phone_flags()
+            elif side == "car":
+                self.car_session.auto_reconnect_ag()
         self._save_state()
 
     def close_session(self, side: str) -> None:

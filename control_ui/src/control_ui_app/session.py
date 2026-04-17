@@ -442,12 +442,28 @@ class SerialBridgeSession:
             self._log("Open the car-side serial session before starting one-click pair")
             return
         if self._sequence_thread is not None and self._sequence_thread.is_alive():
-            self._log("AG one-click pair is already running")
+            self._log("AG one-click connect is already running")
             return
         self._sequence_thread = threading.Thread(
-            target=self._run_ag_pair_sequence,
+            target=self._run_ag_connect_previous,
             args=(address,),
-            name=f"ag-pair-{self.info.label}",
+            name=f"ag-connect-{self.info.label}",
+            daemon=True,
+        )
+        self._sequence_thread.start()
+
+    def auto_reconnect_ag(self) -> None:
+        address = self.info.preferred_remote_address.strip()
+        if not address:
+            return
+        if not self.info.is_open:
+            return
+        if self._sequence_thread is not None and self._sequence_thread.is_alive():
+            return
+        self._sequence_thread = threading.Thread(
+            target=self._run_ag_connect_previous,
+            args=(address,),
+            name=f"ag-autoreconnect-{self.info.label}",
             daemon=True,
         )
         self._sequence_thread.start()
