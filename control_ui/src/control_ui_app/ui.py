@@ -502,7 +502,8 @@ class BridgeApp:
             self._send_car_result(f"+CIND: {ag_cind}", f"Phone HF +CIND {text} -> Car AG +CIND {ag_cind}")
         elif event_code == 0x09 and text:
             self._bridge_phone_incoming_call_hint()
-            clip = f'+CLIP: "{text}",{number}'
+            clip_number = self._normalize_clip_number(text)
+            clip = f'+CLIP: "{clip_number}",{number}'
             self._send_car_result(clip, f"Phone HF CLIP {text}/{number} -> Car AG {clip}")
         elif event_code == 0x0A and text:
             ag_index, value = self._bridge_phone_ciev_to_car(text)
@@ -583,15 +584,23 @@ class BridgeApp:
         return (ag_index, value)
 
     def _bridge_phone_incoming_call_hint(self) -> None:
-        if self._phone_hf_cind[3] == "1" and self._phone_hf_cind[2] == "0":
+        already_incoming = (
+            self._phone_hf_cind[2] == "0"
+            and self._phone_hf_cind[3] == "1"
+            and self._phone_hf_cind[1] == "1"
+        )
+        if already_incoming:
             return
+        self._phone_hf_cind[1] = "1"
         self._phone_hf_cind[2] = "0"
         self._phone_hf_cind[3] = "1"
         self._phone_hf_cind[4] = "0"
         ag_cind = self._current_ag_cind()
         self.car_session.ag_set_cind(ag_cind)
         self._bridge_trace(f"Phone HF inferred incoming call -> Car AG Set CIND {ag_cind}")
+        self._send_car_result("+CIEV: 1,0", "Phone HF inferred incoming call -> Car AG +CIEV 1,0")
         self._send_car_result("+CIEV: 2,1", "Phone HF inferred incoming call -> Car AG +CIEV 2,1")
+        self._send_car_result("+CIEV: 4,1", "Phone HF inferred incoming call -> Car AG +CIEV 4,1")
 
     def _convert_phone_cind_to_ag(self, text: str) -> str:
         values = [part.strip() for part in text.split(",")]
@@ -649,6 +658,12 @@ class BridgeApp:
         handle = payload[0] | (payload[1] << 8) if len(payload) >= 2 else 0
         text = payload[2:].split(b"\x00", 1)[0].decode("utf-8", errors="ignore").strip()
         return (handle, text)
+
+    def _normalize_clip_number(self, text: str) -> str:
+        cleaned = text.strip().strip('"').strip()
+        if cleaned:
+            return cleaned
+        return text.strip()
 
     def _bridge_trace(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
