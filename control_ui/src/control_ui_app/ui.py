@@ -124,10 +124,10 @@ class BridgeApp:
         self._side_widgets["phone"] = self._build_side(phone_frame, "phone", "Phone Board")
         self._side_widgets["car"] = self._build_side(car_frame, "car", "Car Board")
 
-        bottom = ttk.LabelFrame(self.root, text="Unified Bridge Trace", padding=8)
-        bottom.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
-        self.bridge_log = tk.Text(bottom, height=12, wrap="word")
-        self.bridge_log.pack(fill=tk.BOTH, expand=True)
+        bottom = ttk.LabelFrame(self.root, text="Unified Bridge Trace (All Sides + Bridge)", padding=8)
+        bottom.pack(fill=tk.X, expand=False, padx=8, pady=(0, 8))
+        self.bridge_log = tk.Text(bottom, height=14, wrap="word")
+        self.bridge_log.pack(fill=tk.BOTH, expand=False)
         self.bridge_log.configure(state=tk.DISABLED)
 
     def _build_side(self, parent: ttk.Frame, side: str, title: str) -> SideWidgets:
