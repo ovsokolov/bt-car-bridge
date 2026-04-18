@@ -92,6 +92,7 @@ class BridgeApp:
         self._car_audio_open = False
         self._pending_car_at_responses = 0
         self._pending_car_clcc_requests = 0
+        self._car_answer_pending = False
 
         self._build_ui()
         self.refresh_ports()
@@ -579,7 +580,16 @@ class BridgeApp:
             if at_text:
                 at_upper = at_text.strip().upper()
                 if at_upper == "ATA":
-                    self._bridge_trace("Ignored Car AG AT ATA to prevent unintended auto-answer")
+                    if self._car_answer_pending:
+                        self._bridge_trace("Ignored Car AG AT ATA because an answer request is already pending")
+                        return
+                    if not self._is_phone_incoming_call_state():
+                        self._bridge_trace("Ignored Car AG AT ATA because phone side is not in incoming-call state")
+                        return
+                    self.phone_session.hf_send_raw_at("ATA")
+                    self._pending_car_at_responses += 1
+                    self._car_answer_pending = True
+                    self._bridge_trace("Car AG AT ATA -> Phone HF raw AT ATA (incoming call)")
                     return
                 if at_upper == "AT+CLCC":
                     self._pending_car_clcc_requests += 1
@@ -622,6 +632,7 @@ class BridgeApp:
             self._bridge_trace(f"Ignored Phone HF +CIEV {text} because value is not numeric")
             return (None, None)
         self._phone_hf_cind[phone_index] = value
+        self._update_answer_pending_from_call_state()
         ag_index = {1: 4, 2: 1, 3: 2, 4: 3, 5: 5, 6: 7, 7: 6}.get(phone_index)
         if ag_index is None:
             return (None, None)
@@ -643,6 +654,7 @@ class BridgeApp:
         self._phone_hf_cind[2] = "0"
         self._phone_hf_cind[3] = "1"
         self._phone_hf_cind[4] = "0"
+        self._car_answer_pending = False
         ag_cind = self._current_ag_cind()
         self.car_session.ag_set_cind(ag_cind)
         self._bridge_trace(f"Phone HF inferred incoming call -> Car AG Set CIND {ag_cind}")
@@ -776,6 +788,7 @@ class BridgeApp:
         if self._phone_hf_cind[4] != held_val:
             self._phone_hf_cind[4] = held_val
             changed = True
+        self._update_answer_pending_from_call_state()
         if not changed:
             return
         ag_cind = self._current_ag_cind()
@@ -784,6 +797,16 @@ class BridgeApp:
         self._send_car_result(f"+CIEV: 1,{call_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 1,{call_val}")
         self._send_car_result(f"+CIEV: 2,{setup_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 2,{setup_val}")
         self._send_car_result(f"+CIEV: 3,{held_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 3,{held_val}")
+
+    def _is_phone_incoming_call_state(self) -> bool:
+        return self._phone_hf_cind[2] == "0" and self._phone_hf_cind[3] == "1"
+
+    def _update_answer_pending_from_call_state(self) -> None:
+        # Clear pending answer state as soon as the call leaves "incoming setup".
+        if self._phone_hf_cind[2] == "1" and self._phone_hf_cind[3] == "0":
+            self._car_answer_pending = False
+        elif self._phone_hf_cind[2] == "0" and self._phone_hf_cind[3] == "0":
+            self._car_answer_pending = False
 
     def _bridge_trace(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
