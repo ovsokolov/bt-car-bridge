@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from queue import Empty, Queue
+import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from typing import Callable, Optional
@@ -93,6 +94,7 @@ class BridgeApp:
         self._pending_car_at_responses = 0
         self._pending_car_clcc_requests = 0
         self._car_answer_pending = False
+        self._last_phone_ring_at = 0.0
 
         self._build_ui()
         self.refresh_ports()
@@ -503,6 +505,7 @@ class BridgeApp:
         event_code = opcode_value - EVENT_HF_AT_BASE
 
         if event_code == 0x03:
+            self._last_phone_ring_at = time.monotonic()
             self._bridge_phone_incoming_call_hint()
             self._send_car_result("RING", "Phone HF RING -> Car AG RING")
         elif event_code == 0x04:
@@ -643,24 +646,15 @@ class BridgeApp:
         return (ag_index, value)
 
     def _bridge_phone_incoming_call_hint(self) -> None:
-        already_incoming = (
-            self._phone_hf_cind[2] == "0"
-            and self._phone_hf_cind[3] == "1"
-            and self._phone_hf_cind[1] == "1"
-        )
-        if already_incoming:
-            return
-        self._phone_hf_cind[1] = "1"
-        self._phone_hf_cind[2] = "0"
-        self._phone_hf_cind[3] = "1"
-        self._phone_hf_cind[4] = "0"
+        changed = self._set_call_indicators("0", "1", "0")
         self._car_answer_pending = False
+        if not changed:
+            return
         ag_cind = self._current_ag_cind()
         self.car_session.ag_set_cind(ag_cind)
         self._bridge_trace(f"Phone HF inferred incoming call -> Car AG Set CIND {ag_cind}")
         self._send_car_result("+CIEV: 1,0", "Phone HF inferred incoming call -> Car AG +CIEV 1,0")
         self._send_car_result("+CIEV: 2,1", "Phone HF inferred incoming call -> Car AG +CIEV 2,1")
-        self._send_car_result("+CIEV: 4,1", "Phone HF inferred incoming call -> Car AG +CIEV 4,1")
 
     def _convert_phone_cind_to_ag(self, text: str) -> str:
         values = [part.strip() for part in text.split(",")]
@@ -778,16 +772,7 @@ class BridgeApp:
         if updates is None:
             return
         call_val, setup_val, held_val = updates
-        changed = False
-        if self._phone_hf_cind[2] != call_val:
-            self._phone_hf_cind[2] = call_val
-            changed = True
-        if self._phone_hf_cind[3] != setup_val:
-            self._phone_hf_cind[3] = setup_val
-            changed = True
-        if self._phone_hf_cind[4] != held_val:
-            self._phone_hf_cind[4] = held_val
-            changed = True
+        changed = self._set_call_indicators(call_val, setup_val, held_val)
         self._update_answer_pending_from_call_state()
         if not changed:
             return
@@ -799,7 +784,9 @@ class BridgeApp:
         self._send_car_result(f"+CIEV: 3,{held_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 3,{held_val}")
 
     def _is_phone_incoming_call_state(self) -> bool:
-        return self._phone_hf_cind[2] == "0" and self._phone_hf_cind[3] == "1"
+        if self._phone_hf_cind[2] == "0" and self._phone_hf_cind[3] == "1":
+            return True
+        return self._phone_hf_cind[2] == "0" and (time.monotonic() - self._last_phone_ring_at) <= 8.0
 
     def _update_answer_pending_from_call_state(self) -> None:
         # Clear pending answer state as soon as the call leaves "incoming setup".
@@ -807,6 +794,19 @@ class BridgeApp:
             self._car_answer_pending = False
         elif self._phone_hf_cind[2] == "0" and self._phone_hf_cind[3] == "0":
             self._car_answer_pending = False
+
+    def _set_call_indicators(self, call_val: str, setup_val: str, held_val: str) -> bool:
+        changed = False
+        if self._phone_hf_cind[2] != call_val:
+            self._phone_hf_cind[2] = call_val
+            changed = True
+        if self._phone_hf_cind[3] != setup_val:
+            self._phone_hf_cind[3] = setup_val
+            changed = True
+        if self._phone_hf_cind[4] != held_val:
+            self._phone_hf_cind[4] = held_val
+            changed = True
+        return changed
 
     def _bridge_trace(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
