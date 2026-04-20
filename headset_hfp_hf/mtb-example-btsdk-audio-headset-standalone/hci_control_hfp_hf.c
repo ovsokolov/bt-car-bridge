@@ -61,6 +61,7 @@
  ******************************************************/
 bluetooth_hfp_context_t handsfree_ctxt_data;
 hci_control_hfp_hf_app_cb handsfree_app_states;
+static wiced_bool_t hf_local_disconnect_pending = WICED_FALSE;
 
 wiced_bt_sco_params_t handsfree_esco_params =
 {
@@ -177,9 +178,11 @@ static void hci_control_send_hf_event(uint16_t evt, uint16_t handle, hci_control
 static void handsfree_connection_event_handler(wiced_bt_hfp_hf_event_data_t* p_data)
 {
     wiced_bt_dev_status_t status;
+    const wiced_bt_device_address_t empty_bda = {0};
 
     if(p_data->conn_data.conn_state == WICED_BT_HFP_HF_STATE_CONNECTED)
     {
+        hf_local_disconnect_pending = WICED_FALSE;
         hci_control_hfp_hf_open_t    open;
         wiced_bt_hfp_hf_scb_t *p_scb = wiced_bt_hfp_hf_get_scb_by_bd_addr (p_data->conn_data.remote_address);
         memcpy(open.bd_addr,p_data->conn_data.remote_address,BD_ADDR_LEN);
@@ -211,6 +214,17 @@ static void handsfree_connection_event_handler(wiced_bt_hfp_hf_event_data_t* p_d
     }
     else if(p_data->conn_data.conn_state == WICED_BT_HFP_HF_STATE_DISCONNECTED)
     {
+        wiced_bt_device_address_t reconnect_bda = {0};
+
+        if (memcmp(p_data->conn_data.remote_address, empty_bda, BD_ADDR_LEN) != 0)
+        {
+            memcpy(reconnect_bda, p_data->conn_data.remote_address, BD_ADDR_LEN);
+        }
+        else if (memcmp(handsfree_ctxt_data.peer_bd_addr, empty_bda, BD_ADDR_LEN) != 0)
+        {
+            memcpy(reconnect_bda, handsfree_ctxt_data.peer_bd_addr, BD_ADDR_LEN);
+        }
+
         memset(handsfree_ctxt_data.peer_bd_addr, 0, sizeof(wiced_bt_device_address_t));
         if(handsfree_ctxt_data.sco_index != BT_AUDIO_INVALID_SCO_INDEX)
         {
@@ -219,6 +233,17 @@ static void handsfree_connection_event_handler(wiced_bt_hfp_hf_event_data_t* p_d
             WICED_BT_TRACE("%s: remove sco status [%d] \n", __func__, status);
         }
         hci_control_send_hf_event( HCI_CONTROL_HF_EVENT_CLOSE, handsfree_ctxt_data.rfcomm_handle, NULL);
+
+        if (hf_local_disconnect_pending)
+        {
+            hf_local_disconnect_pending = WICED_FALSE;
+            WICED_BT_TRACE("[AUTO_HF] local HF disconnect completed, skip auto-reconnect\n");
+        }
+        else if (memcmp(reconnect_bda, empty_bda, BD_ADDR_LEN) != 0)
+        {
+            WICED_BT_TRACE("[AUTO_HF] runtime HFP link loss, scheduling full reconnect to <%B>\n", reconnect_bda);
+            hf_autoreconnect_restart_full(reconnect_bda, 2);
+        }
     }
     UNUSED_VARIABLE(status);
 }
@@ -695,6 +720,7 @@ void hci_control_hf_handle_command(uint16_t opcode, uint8_t* p_data, uint32_t le
 
     case HCI_CONTROL_HF_COMMAND_DISCONNECT:
         handle = p[0] | (p[1] << 8);
+        hf_local_disconnect_pending = WICED_TRUE;
         wiced_bt_hfp_hf_disconnect(handle);
         break;
 
