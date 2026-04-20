@@ -94,6 +94,7 @@ class BridgeApp:
         self._pending_car_at_responses = 0
         self._pending_car_clcc_requests = 0
         self._car_answer_pending = False
+        self._last_car_ata_forward_at = 0.0
         self._last_phone_ring_at = 0.0
         self._pending_phone_hf_at: list[str] = []
         self._last_clip_number = ""
@@ -591,16 +592,15 @@ class BridgeApp:
             if at_text:
                 at_upper = at_text.strip().upper()
                 if at_upper == "ATA":
-                    if self._car_answer_pending:
-                        self._bridge_trace("Ignored Car AG AT ATA because an answer request is already pending")
-                        return
-                    if not self._is_phone_incoming_call_state():
-                        self._bridge_trace("Ignored Car AG AT ATA because phone side is not in incoming-call state")
+                    now = time.monotonic()
+                    if now - self._last_car_ata_forward_at < 0.35:
+                        self._bridge_trace("Ignored Car AG AT ATA duplicate burst")
                         return
                     self._send_or_queue_phone_hf_at("ATA", "Car AG ATA")
                     self._pending_car_at_responses += 1
                     self._car_answer_pending = True
-                    self._bridge_trace("Car AG AT ATA -> Phone HF raw AT ATA (incoming call)")
+                    self._last_car_ata_forward_at = now
+                    self._bridge_trace("Car AG AT ATA -> Phone HF raw AT ATA")
                     return
                 if at_upper == "AT+CLCC":
                     self._pending_car_clcc_requests += 1
