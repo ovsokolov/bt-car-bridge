@@ -65,6 +65,7 @@
 #include "hci_control_audio.h"
 #include "hci_control_le.h"
 #include "hci_control_rc_controller.h"
+#include "hci_control_rc_target.h"
 #include "le_peripheral.h"
 #include "wiced_app_cfg.h"
 #include "wiced_app.h"
