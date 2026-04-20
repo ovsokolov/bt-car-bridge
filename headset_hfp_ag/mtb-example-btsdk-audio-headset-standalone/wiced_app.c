@@ -62,6 +62,7 @@
 #include <wiced_bt_app_common.h>
 #endif
 #include "hci_control.h"
+#include "hci_control_audio.h"
 #include "hci_control_le.h"
 #include "hci_control_rc_controller.h"
 #include "le_peripheral.h"
@@ -85,6 +86,7 @@ static void write_eir(void);
 static wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data);
 static void delayed_bond_dump(TIMER_PARAM_TYPE arg);
 static void log_bond_state(void);
+static void ag_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg);
 
 #if defined(CYW20819A1)
 #include "wiced_memory_pre_init.h"
@@ -101,6 +103,71 @@ WICED_MEM_PRE_INIT_CONTROL g_mem_pre_init =
 
 static app_identity_random_mapping_t addr_mapping[ADDR_MAPPING_MAX_COUNT] = {0};
 static wiced_timer_t delayed_bond_dump_timer;
+static wiced_timer_t ag_autoreconnect_timer;
+static wiced_bt_device_address_t ag_autoreconnect_bda = {0};
+static wiced_bool_t ag_manual_disconnect_pending = WICED_FALSE;
+static uint8_t ag_autoreconnect_stage = 0;
+
+#define AG_AUTORECONNECT_STAGE_HFP   1
+#define AG_AUTORECONNECT_STAGE_AVRCP 2
+#define AG_AUTORECONNECT_STAGE_A2DP  3
+
+extern wiced_result_t av_app_initiate_sdp(BD_ADDR bda);
+
+void hf_note_manual_ag_disconnect(void)
+{
+    ag_manual_disconnect_pending = WICED_TRUE;
+}
+
+void hf_note_manual_ag_connect(void)
+{
+    ag_manual_disconnect_pending = WICED_FALSE;
+}
+
+void hf_autoreconnect_restart_full(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds)
+{
+    static const wiced_bt_device_address_t empty_bda = {0};
+
+    if (memcmp(bd_addr, empty_bda, BD_ADDR_LEN) == 0)
+    {
+        return;
+    }
+
+    memcpy(ag_autoreconnect_bda, bd_addr, BD_ADDR_LEN);
+    ag_autoreconnect_stage = AG_AUTORECONNECT_STAGE_HFP;
+    wiced_stop_timer(&ag_autoreconnect_timer);
+    wiced_start_timer(&ag_autoreconnect_timer, delay_seconds);
+
+    WICED_BT_TRACE("[AUTO_AG] queued staged reconnect to <%B> in %lu sec\n",
+                   ag_autoreconnect_bda,
+                   (unsigned long)delay_seconds);
+}
+
+static void ag_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
+{
+    UNUSED_VARIABLE(arg);
+
+    if (ag_autoreconnect_stage == AG_AUTORECONNECT_STAGE_HFP)
+    {
+        WICED_BT_TRACE("[AUTO_AG] reconnect stage HFP to <%B>\n", ag_autoreconnect_bda);
+        hfp_ag_connect(ag_autoreconnect_bda);
+        ag_autoreconnect_stage = AG_AUTORECONNECT_STAGE_AVRCP;
+        wiced_start_timer(&ag_autoreconnect_timer, 1);
+    }
+    else if (ag_autoreconnect_stage == AG_AUTORECONNECT_STAGE_AVRCP)
+    {
+        WICED_BT_TRACE("[AUTO_AG] reconnect stage AVRCP TG to <%B>\n", ag_autoreconnect_bda);
+        wiced_bt_avrc_tg_initiate_open(ag_autoreconnect_bda);
+        ag_autoreconnect_stage = AG_AUTORECONNECT_STAGE_A2DP;
+        wiced_start_timer(&ag_autoreconnect_timer, 1);
+    }
+    else if (ag_autoreconnect_stage == AG_AUTORECONNECT_STAGE_A2DP)
+    {
+        WICED_BT_TRACE("[AUTO_AG] reconnect stage A2DP source to <%B>\n", ag_autoreconnect_bda);
+        av_app_initiate_sdp(ag_autoreconnect_bda);
+        ag_autoreconnect_stage = 0;
+    }
+}
 
 /*
  * Application Start, ie, entry point to the application.
@@ -388,6 +455,11 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
                                p_event_data->pairing_complete.bd_addr,
                                pairing_result);
                 hci_control_send_pairing_completed_evt( pairing_result, p_event_data->pairing_complete.bd_addr );
+                if (pairing_result == WICED_BT_SUCCESS)
+                {
+                    ag_manual_disconnect_pending = WICED_FALSE;
+                    hf_autoreconnect_restart_full(p_event_data->pairing_complete.bd_addr, 1);
+                }
             }
             else
             {
@@ -417,6 +489,20 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
                 le_peripheral_encryption_status_changed(p_encryption_status);
 #endif
             hci_control_send_encryption_changed_evt( p_encryption_status->result, p_encryption_status->bd_addr );
+            if ((hfp_profile_role == HFP_AUDIO_GATEWAY_ROLE) &&
+                (p_encryption_status->transport == BT_TRANSPORT_BR_EDR) &&
+                (p_encryption_status->result != WICED_BT_SUCCESS))
+            {
+                if (ag_manual_disconnect_pending)
+                {
+                    ag_manual_disconnect_pending = WICED_FALSE;
+                    WICED_BT_TRACE("[AUTO_AG] skip reconnect after manual disconnect\n");
+                }
+                else
+                {
+                    hf_autoreconnect_restart_full(p_encryption_status->bd_addr, 2);
+                }
+            }
             break;
 
         case BTM_SECURITY_REQUEST_EVT:
@@ -565,6 +651,7 @@ wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data)
 
     wiced_init_timer(&delayed_bond_dump_timer, delayed_bond_dump, 0, WICED_SECONDS_TIMER);
     wiced_start_timer(&delayed_bond_dump_timer, 3);
+    wiced_init_timer(&ag_autoreconnect_timer, ag_autoreconnect_timer_cb, 0, WICED_SECONDS_TIMER);
 
     wiced_bt_dev_set_discoverability(BTM_GENERAL_DISCOVERABLE,
                                      BTM_DEFAULT_DISC_WINDOW,

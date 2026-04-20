@@ -43,6 +43,7 @@
 #include "wiced_bt_trace.h"
 #include "hci_control_hfp_ag.h"
 #include "hci_control.h"
+#include "wiced_app.h"
 #include "wiced_timer.h"
 
 #include "wiced_bt_hfp_ag.h"
@@ -109,11 +110,13 @@ void hci_control_ag_handle_command( uint16_t opcode, uint8_t* p_data, uint32_t l
     {
     case HCI_CONTROL_AG_COMMAND_CONNECT:
         hci_control_switch_hfp_role( HFP_AUDIO_GATEWAY_ROLE );
+        hf_note_manual_ag_connect();
         hfp_ag_connect( p );
         break;
 
     case HCI_CONTROL_AG_COMMAND_DISCONNECT:
         handle = p[0] | ( p[1] << 8 );
+        hf_note_manual_ag_disconnect();
         hfp_ag_disconnect( handle );
         break;
 
