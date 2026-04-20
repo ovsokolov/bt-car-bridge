@@ -615,6 +615,12 @@ class BridgeApp:
             handle, at_text = self._parse_ag_at_payload(payload)
             if at_text:
                 at_upper = at_text.strip().upper()
+                if at_upper.startswith("AT+CHLD"):
+                    if self._phone_hf_cind[2] != "1":
+                        self._bridge_trace(
+                            f"Ignored Car AG AT {at_text} while call is not active (prevents unsolicited auto-answer)"
+                        )
+                        return
                 if at_upper.startswith("AT+BCS"):
                     if self._phone_hf_cind[2] != "1":
                         self._bridge_trace(
