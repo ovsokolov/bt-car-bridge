@@ -609,6 +609,12 @@ class BridgeApp:
             handle, at_text = self._parse_ag_at_payload(payload)
             if at_text:
                 at_upper = at_text.strip().upper()
+                if at_upper.startswith("AT+BCS"):
+                    if self._phone_hf_cind[2] != "1":
+                        self._bridge_trace(
+                            f"Ignored Car AG AT {at_text} because call is not active yet (prevents premature audio negotiation)"
+                        )
+                        return
                 if at_upper == "ATA":
                     now = time.monotonic()
                     if now - self._last_car_ata_forward_at < 0.35:
@@ -901,7 +907,7 @@ class BridgeApp:
                 f"Dropped {source} bootstrap AT {at_text} because HF service handle is unavailable"
             )
             return "dropped"
-        no_queue_prefixes = ("ATA", "ATD", "AT+BLDN", "AT+VTS")
+        no_queue_prefixes = ("ATA", "ATD", "AT+BLDN", "AT+VTS", "AT+CLCC", "AT+CHLD", "AT+BCS")
         if at_upper.startswith(no_queue_prefixes):
             self._bridge_trace(
                 f"Dropped {source} -> Phone HF raw AT {at_text} because HF service handle is unavailable"
