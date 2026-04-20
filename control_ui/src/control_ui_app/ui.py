@@ -97,6 +97,8 @@ class BridgeApp:
         self._last_car_ata_forward_at = 0.0
         self._last_phone_ring_at = 0.0
         self._last_phone_clip_at = 0.0
+        self._last_phone_real_ring_at = 0.0
+        self._last_phone_real_clip_at = 0.0
         self._pending_phone_hf_at: list[str] = []
         self._pending_car_results: list[tuple[str, str]] = []
         self._last_clip_number = ""
@@ -512,7 +514,9 @@ class BridgeApp:
         event_code = opcode_value - EVENT_HF_AT_BASE
 
         if event_code == 0x03:
-            self._last_phone_ring_at = time.monotonic()
+            now = time.monotonic()
+            self._last_phone_ring_at = now
+            self._last_phone_real_ring_at = now
             self._bridge_phone_incoming_call_hint()
             self._send_car_result("RING", "Phone HF RING -> Car AG RING")
         elif event_code == 0x04:
@@ -525,7 +529,9 @@ class BridgeApp:
             self._send_car_result(f"+CIND: {ag_cind}", f"Phone HF +CIND {text} -> Car AG +CIND {ag_cind}")
         elif event_code == 0x09 and text:
             self._bridge_phone_incoming_call_hint()
-            self._last_phone_clip_at = time.monotonic()
+            now = time.monotonic()
+            self._last_phone_clip_at = now
+            self._last_phone_real_clip_at = now
             clip_number = self._normalize_clip_number(text)
             self._last_clip_number = clip_number
             self._last_clip_type = str(number if number > 0 else 129)
@@ -842,7 +848,8 @@ class BridgeApp:
         if not self._is_phone_incoming_call_state():
             return False
         now = time.monotonic()
-        last_signal_at = max(self._last_phone_ring_at, self._last_phone_clip_at)
+        # Only a real phone-originated RING/CLIP may authorize ATA forwarding.
+        last_signal_at = max(self._last_phone_real_ring_at, self._last_phone_real_clip_at)
         if last_signal_at <= 0:
             return False
         age = now - last_signal_at
