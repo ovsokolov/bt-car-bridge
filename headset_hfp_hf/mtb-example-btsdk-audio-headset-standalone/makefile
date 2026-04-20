@@ -172,6 +172,16 @@ HFP_HF_INCLUDED = 1
 endif
 endif
 
+# Use deterministic per-role BD_ADDR defaults when caller does not provide one.
+# Format must be 12 hex digits without separators.
+ifeq ($(BT_DEVICE_ADDRESS),default)
+ifeq ($(HFP_AG_INCLUDED),1)
+BT_DEVICE_ADDRESS := 20706A20D340
+else
+BT_DEVICE_ADDRESS := 20706A20D341
+endif
+endif
+
 ifeq ($(PAN_PTS_INCLUDED), 1)
 CY_APP_DEFINES += -DWICED_APP_PAN_PTS_INCLUDED
 endif
