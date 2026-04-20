@@ -896,6 +896,11 @@ class BridgeApp:
             self.phone_session.hf_send_raw_at(at_text)
             return "sent"
         at_upper = at_text.strip().upper()
+        if self._is_bootstrap_car_ag_at(at_upper):
+            self._bridge_trace(
+                f"Dropped {source} bootstrap AT {at_text} because HF service handle is unavailable"
+            )
+            return "dropped"
         no_queue_prefixes = ("ATA", "ATD", "AT+BLDN", "AT+VTS")
         if at_upper.startswith(no_queue_prefixes):
             self._bridge_trace(
@@ -908,6 +913,26 @@ class BridgeApp:
         self._pending_phone_hf_at.append(at_text)
         self._bridge_trace(f"Queued {source} -> Phone HF raw AT {at_text} (waiting for HF service handle)")
         return "queued"
+
+    def _is_bootstrap_car_ag_at(self, at_upper: str) -> bool:
+        bootstrap_prefixes = (
+            "AT+BRSF",
+            "AT+CIND=?",
+            "AT+CIND?",
+            "AT+CMER",
+            "AT+CLIP=",
+            "AT+CCWA=",
+            "AT+XAPL",
+            "AT+CNUM",
+            "AT+COPS?",
+            "AT+NREC",
+            "AT+CGMI",
+            "AT+CGMM",
+            "AT+CCLK?",
+            "AT+VGM=",
+            "AT+VGS=",
+        )
+        return at_upper.startswith(bootstrap_prefixes)
 
     def _flush_pending_phone_hf_at(self) -> None:
         if self.phone_session.info.service_handle <= 0 or not self._pending_phone_hf_at:
