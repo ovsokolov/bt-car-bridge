@@ -445,9 +445,9 @@ class SerialBridgeSession:
             self._log("AG one-click connect is already running")
             return
         self._sequence_thread = threading.Thread(
-            target=self._run_ag_connect_previous,
+            target=self._run_ag_pair_sequence,
             args=(address,),
-            name=f"ag-connect-{self.info.label}",
+            name=f"ag-pair-{self.info.label}",
             daemon=True,
         )
         self._sequence_thread.start()
