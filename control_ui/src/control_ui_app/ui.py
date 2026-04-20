@@ -293,8 +293,6 @@ class BridgeApp:
         if self.sessions[side].open(port):
             if side == "phone":
                 self.apply_phone_flags()
-            elif side == "car":
-                self.car_session.auto_reconnect_ag()
         self._save_state()
 
     def close_session(self, side: str) -> None:
