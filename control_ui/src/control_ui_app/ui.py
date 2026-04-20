@@ -833,7 +833,12 @@ class BridgeApp:
         if not self._is_phone_incoming_call_state():
             return False
         now = time.monotonic()
-        return (now - self._last_phone_ring_at) <= 8.0 or (now - self._last_phone_clip_at) <= 8.0
+        last_signal_at = max(self._last_phone_ring_at, self._last_phone_clip_at)
+        if last_signal_at <= 0:
+            return False
+        age = now - last_signal_at
+        # Block "instant" ATA bursts that appear before a human can react.
+        return 0.8 <= age <= 8.0
 
     def _update_answer_pending_from_call_state(self) -> None:
         # Clear pending answer state as soon as the call leaves "incoming setup".
@@ -860,12 +865,15 @@ class BridgeApp:
             self.phone_session.hf_send_raw_at(at_text)
             return "sent"
         at_upper = at_text.strip().upper()
-        no_queue_prefixes = ("ATA", "AT+CHUP", "AT+CHLD", "ATD", "AT+BLDN", "AT+VTS", "AT+CLCC")
+        no_queue_prefixes = ("ATA", "ATD", "AT+BLDN", "AT+VTS")
         if at_upper.startswith(no_queue_prefixes):
             self._bridge_trace(
                 f"Dropped {source} -> Phone HF raw AT {at_text} because HF service handle is unavailable"
             )
             return "dropped"
+        # Keep queue bounded, but prefer retaining latest call-control commands.
+        if len(self._pending_phone_hf_at) >= 80:
+            self._pending_phone_hf_at.pop(0)
         self._pending_phone_hf_at.append(at_text)
         self._bridge_trace(f"Queued {source} -> Phone HF raw AT {at_text} (waiting for HF service handle)")
         return "queued"
