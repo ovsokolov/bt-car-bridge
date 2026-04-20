@@ -133,6 +133,17 @@ class SerialBridgeSession:
         self._last_command_at = 0.0
         self._pending_ag_auto_connect_address: Optional[str] = None
 
+    def _wait_for(self, predicate: Callable[[], bool], timeout_seconds: float, label: str) -> bool:
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            if self._stop_event.is_set() or not self.info.is_open:
+                return False
+            if predicate():
+                return True
+            self._stop_event.wait(0.1)
+        self._log(f"Timed out while waiting for {label}")
+        return False
+
     @staticmethod
     def serial_supported() -> bool:
         return serial is not None
@@ -492,9 +503,11 @@ class SerialBridgeSession:
 
     def _run_ag_pair_sequence(self, address: str) -> None:
         steps: list[tuple[str, Callable[[], None], float]] = [
+            ("Stopping inquiry before pairing", self.stop_inquiry, 0.5),
             ("Disconnecting old AG service link", self.ag_disconnect, 0.6),
             ("Disconnecting old A2DP source link", self.a2dp_source_disconnect, 0.6),
             ("Disconnecting old AVRCP target link", self.avrc_tg_disconnect, 0.6),
+            ("Enabling AG pairing mode", lambda: self.set_pairing_mode(True), 0.4),
             (f"Starting bond with {address}", lambda: self.bond(address), 1.6),
         ]
         self._remember_remote(address)
@@ -511,7 +524,14 @@ class SerialBridgeSession:
                 self._pending_ag_auto_connect_address = None
                 self._log("AG one-click pair interrupted while waiting for the next step")
                 return
-        self._log("AG bond started; respond to any PIN or numeric comparison prompts if shown")
+            if label == "Disconnecting old AVRCP target link":
+                self._wait_for(
+                    lambda: not self.info.ag_connected and not self.info.a2dp_connected and not self.info.avrc_connected,
+                    timeout_seconds=4.0,
+                    label="all AG profiles to disconnect before bonding",
+                )
+        if self._pending_ag_auto_connect_address is not None:
+            self._log("AG bond started; respond to any PIN or numeric comparison prompts if shown")
 
     def _start_ag_profile_connect_after_pair(self, address: str) -> None:
         if self._stop_event.is_set() or not self.info.is_open:
