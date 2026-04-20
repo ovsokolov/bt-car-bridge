@@ -49,6 +49,7 @@
 #include "hci_control.h"
 #include "hci_control_audio.h"
 #include "hci_control_rc_target.h"
+#include "wiced_app.h"
 #include "wiced_timer.h"
 #include "string.h"
 #include "wiced_memory.h"
@@ -959,6 +960,8 @@ static void av_app_connect_event_hdlr(uint8_t handle, BD_ADDR bd_addr)
  */
 static void av_app_disconnect_event_hdlr( uint8_t handle, BD_ADDR bd_addr, uint8_t event, wiced_bt_avdt_ctrl_t *p_data )
 {
+    const wiced_bt_device_address_t empty_bda = {0};
+
     av_app_cb.state = AV_STATE_IDLE;
 
     WICED_BT_TRACE( "[%s]: handle:%04x\n\r", __FUNCTION__, av_app_cb.avdt_handle );
@@ -990,6 +993,16 @@ static void av_app_disconnect_event_hdlr( uint8_t handle, BD_ADDR bd_addr, uint8
     av_app_set_audio_streaming(WICED_FALSE);
 
     hci_control_audio_send_disconnect_complete( av_app_cb.avdt_handle, p_data->disconnect_ind.err_code, p_data->disconnect_ind.err_param );
+
+    /*
+     * If media link drops unexpectedly, retry only the media leg.
+     * HFP/AVRCP reconnect progression remains driven by their connect callbacks.
+     */
+    if ((event == AVDT_DISCONNECT_IND_EVT) &&
+        (memcmp(bd_addr, empty_bda, BD_ADDR_LEN) != 0))
+    {
+        hf_autoreconnect_continue_from_avrcp(bd_addr, 2);
+    }
 #ifdef WICED_APP_AUDIO_RC_TG_INCLUDED
     /* Disconnect AVRCP */
     wiced_bt_avrc_tg_initiate_close();

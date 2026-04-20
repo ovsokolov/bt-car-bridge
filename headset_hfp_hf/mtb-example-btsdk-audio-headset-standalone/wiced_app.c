@@ -502,7 +502,6 @@ static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
 {
     uint8_t audio_format_cmd[2] = { AUDIO_SRC_AUDIO_DATA_FORMAT_PCM, AUDIO_ROUTE_I2S };
     wiced_result_t status = WICED_BT_SUCCESS;
-    hf_autoreconnect_stage_t next_stage = HF_AUTORECONNECT_IDLE;
 
     UNUSED_VARIABLE(arg);
 
@@ -530,7 +529,11 @@ static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
             status = WICED_BT_UNSUPPORTED;
 #endif
         }
-        next_stage = HF_AUTORECONNECT_AVRCP;
+        if (status == WICED_BT_SUCCESS || status == WICED_ALREADY_CONNECTED || status == WICED_BT_UNSUPPORTED)
+        {
+            hf_schedule_autoreconnect_stage(hf_autoreconnect_bda, HF_AUTORECONNECT_AVRCP, 1);
+            return;
+        }
         break;
 
     case HF_AUTORECONNECT_AVRCP:
@@ -555,7 +558,11 @@ static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
             status = WICED_BT_UNSUPPORTED;
 #endif
         }
-        next_stage = HF_AUTORECONNECT_A2DP;
+        if (status == WICED_BT_SUCCESS || status == WICED_ALREADY_CONNECTED || status == WICED_BT_UNSUPPORTED)
+        {
+            hf_schedule_autoreconnect_stage(hf_autoreconnect_bda, HF_AUTORECONNECT_A2DP, 1);
+            return;
+        }
         break;
 
     case HF_AUTORECONNECT_A2DP:
@@ -582,7 +589,6 @@ static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
             status = WICED_BT_UNSUPPORTED;
 #endif
         }
-        next_stage = HF_AUTORECONNECT_IDLE;
         break;
 
     default:
@@ -591,15 +597,10 @@ static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
 
     WICED_BT_TRACE("[AUTO_%s] stage result %d\n", hf_autoreconnect_role_name(), status);
 
-    hf_autoreconnect_stage = next_stage;
-    if (hf_autoreconnect_stage != HF_AUTORECONNECT_IDLE)
+    hf_autoreconnect_stage = HF_AUTORECONNECT_IDLE;
+    if (!hf_autoreconnect_status_ok_for_progress(status))
     {
-        wiced_stop_timer(&hf_autoreconnect_timer);
-        wiced_start_timer(&hf_autoreconnect_timer, 1);
-    }
-    else if (!hf_autoreconnect_status_ok_for_progress(status))
-    {
-        WICED_BT_TRACE("[AUTO_%s] stage failure detected; scheduling full reconnect retry\n",
+        WICED_BT_TRACE("[AUTO_%s] stage failure detected; scheduling reconnect retry\n",
                        hf_autoreconnect_role_name());
         hf_start_autoreconnect("stage failure", 5);
     }
