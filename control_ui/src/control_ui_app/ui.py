@@ -592,6 +592,13 @@ class BridgeApp:
             return
         if opcode_value == EVENT_AG_AUDIO_OPEN:
             self._car_audio_open = True
+            if self._phone_hf_cind[2] != "1":
+                self._bridge_trace(
+                    "Observed Car AG audio open while call is not active; closing AG audio to avoid false auto-answer"
+                )
+                self.car_session.ag_audio_close()
+                self._car_audio_open = False
+                return
             self._bridge_trace("Observed Car AG audio open; skipping HF audio forwarding")
             return
         if opcode_value == EVENT_AG_AUDIO_CLOSE:
