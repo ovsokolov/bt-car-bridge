@@ -96,6 +96,7 @@ class BridgeApp:
         self._car_answer_pending = False
         self._last_car_ata_forward_at = 0.0
         self._last_phone_ring_at = 0.0
+        self._last_phone_clip_at = 0.0
         self._pending_phone_hf_at: list[str] = []
         self._pending_car_results: list[tuple[str, str]] = []
         self._last_clip_number = ""
@@ -525,6 +526,7 @@ class BridgeApp:
             self._send_car_result(f"+CIND: {ag_cind}", f"Phone HF +CIND {text} -> Car AG +CIND {ag_cind}")
         elif event_code == 0x09 and text:
             self._bridge_phone_incoming_call_hint()
+            self._last_phone_clip_at = time.monotonic()
             clip_number = self._normalize_clip_number(text)
             self._last_clip_number = clip_number
             self._last_clip_type = str(number if number > 0 else 129)
@@ -597,6 +599,9 @@ class BridgeApp:
                     now = time.monotonic()
                     if now - self._last_car_ata_forward_at < 0.35:
                         self._bridge_trace("Ignored Car AG AT ATA duplicate burst")
+                        return
+                    if not self._is_phone_answer_window():
+                        self._bridge_trace("Ignored Car AG AT ATA because no valid incoming-call answer window is active")
                         return
                     send_state = self._send_or_queue_phone_hf_at("ATA", "Car AG ATA")
                     if send_state != "dropped":
@@ -819,6 +824,12 @@ class BridgeApp:
         if self._phone_hf_cind[2] == "0" and self._phone_hf_cind[3] == "1":
             return True
         return self._phone_hf_cind[2] == "0" and (time.monotonic() - self._last_phone_ring_at) <= 8.0
+
+    def _is_phone_answer_window(self) -> bool:
+        if not self._is_phone_incoming_call_state():
+            return False
+        now = time.monotonic()
+        return (now - self._last_phone_ring_at) <= 8.0 or (now - self._last_phone_clip_at) <= 8.0
 
     def _update_answer_pending_from_call_state(self) -> None:
         # Clear pending answer state as soon as the call leaves "incoming setup".
