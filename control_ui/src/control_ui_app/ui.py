@@ -99,6 +99,7 @@ class BridgeApp:
         self._last_phone_clip_at = 0.0
         self._last_phone_real_ring_at = 0.0
         self._last_phone_real_clip_at = 0.0
+        self._last_phone_hf_handle = 0
         self._pending_phone_hf_at: list[str] = []
         self._pending_car_results: list[tuple[str, str]] = []
         self._last_clip_number = ""
@@ -492,6 +493,9 @@ class BridgeApp:
         if not isinstance(raw_payload, (bytes, bytearray)):
             return
         packet_payload = bytes(raw_payload)
+
+        if side == "phone" and opcode_value == opcode(GROUP_HF, 0x03) and len(packet_payload) >= 2:
+            self._last_phone_hf_handle = packet_payload[0] | (packet_payload[1] << 8)
 
         if side == "phone" and opcode_value == opcode(GROUP_HF, 0x03):
             self._flush_pending_phone_hf_at()
@@ -904,6 +908,12 @@ class BridgeApp:
             self.phone_session.hf_send_raw_at(at_text)
             return "sent"
         at_upper = at_text.strip().upper()
+        if self._last_phone_hf_handle > 0 and not self._is_bootstrap_car_ag_at(at_upper):
+            self.phone_session.hf_send_raw_at(at_text, handle=self._last_phone_hf_handle)
+            self._bridge_trace(
+                f"Sent {source} -> Phone HF raw AT {at_text} using last known HF handle {self._last_phone_hf_handle}"
+            )
+            return "sent"
         if self._is_bootstrap_car_ag_at(at_upper):
             self._bridge_trace(
                 f"Dropped {source} bootstrap AT {at_text} because HF service handle is unavailable"
