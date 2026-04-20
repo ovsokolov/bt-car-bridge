@@ -502,6 +502,8 @@ class BridgeApp:
             self._bridge_car_packet(opcode_value, packet_payload)
 
     def _bridge_phone_packet(self, opcode_value: int, payload: bytes) -> None:
+        if opcode_value == opcode(GROUP_HF, 0x04):
+            self._car_answer_pending = False
         if opcode_value == EVENT_HF_AUDIO_OPEN:
             self._bridge_trace("Observed Phone HF audio open; skipping AG audio forwarding to avoid false answered state")
             return
@@ -592,9 +594,9 @@ class BridgeApp:
             return
         if opcode_value == EVENT_AG_AUDIO_OPEN:
             self._car_audio_open = True
-            if self._phone_hf_cind[2] != "1":
+            if (not self._car_answer_pending) and self._phone_hf_cind[2] != "1":
                 self._bridge_trace(
-                    "Observed Car AG audio open while call is not active; closing AG audio to avoid false auto-answer"
+                    "Observed Car AG audio open without approved answer path; closing AG audio to avoid false auto-answer"
                 )
                 self.car_session.ag_audio_close()
                 self._car_audio_open = False
