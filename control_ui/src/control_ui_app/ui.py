@@ -659,6 +659,15 @@ class BridgeApp:
             return (None, None)
         self._phone_hf_cind[phone_index] = value
         self._update_answer_pending_from_call_state()
+        if phone_index == 3 and value == "1":
+            now = time.monotonic()
+            # Fallback: some phone/HF stacks do not emit RING/CLIP consistently after reconnect.
+            if (now - self._last_phone_ring_at) > 2.0:
+                self._last_phone_ring_at = now
+                self._send_car_result("RING", "Phone HF +CIEV 3,1 fallback -> Car AG RING")
+            if self._last_clip_number:
+                clip = f'+CLIP: "{self._last_clip_number}",{self._last_clip_type if self._last_clip_type.isdigit() else "129"}'
+                self._send_car_result(clip, f"Phone HF +CIEV 3,1 fallback -> Car AG {clip}")
         ag_index = {1: 4, 2: 1, 3: 2, 4: 3, 5: 5, 6: 7, 7: 6}.get(phone_index)
         if ag_index is None:
             return (None, None)
