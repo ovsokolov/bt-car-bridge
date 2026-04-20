@@ -103,6 +103,9 @@ static void hf_schedule_autoreconnect_stage(const wiced_bt_device_address_t bd_a
                                             hf_autoreconnect_stage_t stage,
                                             uint32_t delay_seconds);
 static void hf_start_autoreconnect(const char *reason, uint32_t delay_seconds);
+static void apply_role_specific_local_address(void);
+static void enable_pairing_visibility_when_unbonded(void);
+static wiced_bool_t hf_autoreconnect_status_ok_for_progress(wiced_result_t status);
 
 extern wiced_result_t av_app_initiate_sdp(BD_ADDR bda);
 
@@ -129,6 +132,71 @@ static hf_autoreconnect_stage_t hf_autoreconnect_stage = HF_AUTORECONNECT_IDLE;
 static const char *hf_autoreconnect_role_name(void)
 {
     return (hfp_profile_role == HFP_AUDIO_GATEWAY_ROLE) ? "AG" : "HF";
+}
+
+static void apply_role_specific_local_address(void)
+{
+    wiced_bt_device_address_t current_addr = {0};
+    wiced_bt_device_address_t desired_addr = {0};
+
+    wiced_bt_dev_read_local_addr(current_addr);
+    memcpy(desired_addr, current_addr, BD_ADDR_LEN);
+
+    /*
+     * Ensure HF and AG firmware images cannot keep the exact same local address
+     * when both are built/flashed from one workspace.
+     */
+    if (hfp_profile_role == HFP_AUDIO_GATEWAY_ROLE)
+    {
+        desired_addr[0] ^= 0x01;
+    }
+
+    if (memcmp(current_addr, desired_addr, BD_ADDR_LEN) != 0)
+    {
+        wiced_bt_set_local_bdaddr(desired_addr, BLE_ADDR_PUBLIC);
+        WICED_BT_TRACE("[AUTO_%s] local address adjusted from <%B> to <%B>\n",
+                       hf_autoreconnect_role_name(),
+                       current_addr,
+                       desired_addr);
+    }
+    else
+    {
+        WICED_BT_TRACE("[AUTO_%s] local address kept as <%B>\n",
+                       hf_autoreconnect_role_name(),
+                       current_addr);
+    }
+}
+
+static void enable_pairing_visibility_when_unbonded(void)
+{
+    wiced_bt_device_address_t bonded_addr = {0};
+
+    if (hf_get_last_bonded_device(bonded_addr))
+    {
+        WICED_BT_TRACE("[AUTO_%s] bonded peer exists <%B>; keeping default hidden/pairable-off policy\n",
+                       hf_autoreconnect_role_name(),
+                       bonded_addr);
+        return;
+    }
+
+    wiced_bt_set_pairable_mode(WICED_TRUE, 0);
+    wiced_bt_dev_set_discoverability(BTM_GENERAL_DISCOVERABLE,
+                                     BTM_DEFAULT_DISC_WINDOW,
+                                     BTM_DEFAULT_DISC_INTERVAL);
+    wiced_bt_dev_set_connectability(WICED_TRUE,
+                                    BTM_DEFAULT_CONN_WINDOW,
+                                    BTM_DEFAULT_CONN_INTERVAL);
+
+    WICED_BT_TRACE("[AUTO_%s] no bonded peer: auto-enabled pairable/discoverable/connectable for first-time pairing\n",
+                   hf_autoreconnect_role_name());
+}
+
+static wiced_bool_t hf_autoreconnect_status_ok_for_progress(wiced_result_t status)
+{
+    return (status == WICED_BT_SUCCESS ||
+            status == WICED_BT_PENDING ||
+            status == WICED_BT_BUSY ||
+            status == WICED_ALREADY_CONNECTED);
 }
 
 /*
@@ -525,6 +593,12 @@ static void hf_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
         wiced_stop_timer(&hf_autoreconnect_timer);
         wiced_start_timer(&hf_autoreconnect_timer, 1);
     }
+    else if (!hf_autoreconnect_status_ok_for_progress(status))
+    {
+        WICED_BT_TRACE("[AUTO_%s] stage failure detected; scheduling full reconnect retry\n",
+                       hf_autoreconnect_role_name());
+        hf_start_autoreconnect("stage failure", 5);
+    }
 }
 
 wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_management_evt_data_t *p_event_data)
@@ -759,6 +833,9 @@ wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data)
 
     hci_control_post_init();
 
+    apply_role_specific_local_address();
+    enable_pairing_visibility_when_unbonded();
+
 #ifdef CYW9BT_AUDIO
     /* Initialize AudioManager */
     wiced_am_init();
@@ -771,7 +848,7 @@ wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data)
     wiced_init_timer(&hf_autoreconnect_timer, hf_autoreconnect_timer_cb, 0, WICED_SECONDS_TIMER);
     hf_start_autoreconnect("boot", 5);
 
-    WICED_BT_TRACE("Boot default keeps BR/EDR hidden; auto-reconnect (%s role) will target the last bonded peer\n",
+    WICED_BT_TRACE("Boot auto-reconnect (%s role) will target the last bonded peer when available\n",
                    hf_autoreconnect_role_name());
 
     return WICED_BT_SUCCESS;
