@@ -580,6 +580,14 @@ class SerialBridgeSession:
             self.info.last_status = f"Write failed: {exc}"
             self._emit("state", status=self.info.last_status)
             self._log(self.info.last_status)
+            # Keep the session alive on transient write timeouts so bridge state can recover.
+            if "timeout" in str(exc).lower():
+                try:
+                    if self._serial is not None and hasattr(self._serial, "reset_output_buffer"):
+                        self._serial.reset_output_buffer()
+                except Exception:
+                    pass
+                return False
             self.close()
             return False
         self._last_command_at = time.time()

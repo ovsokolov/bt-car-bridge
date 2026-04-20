@@ -521,8 +521,7 @@ class BridgeApp:
             self._send_car_result(f"+VGM: {number}", f"Phone HF VGM={number} -> Car AG +VGM")
         elif event_code == 0x08 and text:
             ag_cind = self._convert_phone_cind_to_ag(text)
-            self.car_session.ag_set_cind(ag_cind)
-            self._bridge_trace(f"Phone HF +CIND {text} -> Car AG Set CIND {ag_cind}")
+            self._send_car_cind_update(f"Phone HF +CIND {text}")
             self._send_car_result(f"+CIND: {ag_cind}", f"Phone HF +CIND {text} -> Car AG +CIND {ag_cind}")
         elif event_code == 0x09 and text:
             self._bridge_phone_incoming_call_hint()
@@ -663,7 +662,7 @@ class BridgeApp:
         ag_index = {1: 4, 2: 1, 3: 2, 4: 3, 5: 5, 6: 7, 7: 6}.get(phone_index)
         if ag_index is None:
             return (None, None)
-        self.car_session.ag_set_cind(self._current_ag_cind())
+        self._send_car_cind_update(f"Phone HF +CIEV {phone_index},{value}")
         self._bridge_trace(
             f"Phone HF +CIEV {phone_index},{value} -> Car AG indicator {ag_index},{value} | CIND {self._current_ag_cind()}"
         )
@@ -674,9 +673,7 @@ class BridgeApp:
         self._car_answer_pending = False
         if not changed:
             return
-        ag_cind = self._current_ag_cind()
-        self.car_session.ag_set_cind(ag_cind)
-        self._bridge_trace(f"Phone HF inferred incoming call -> Car AG Set CIND {ag_cind}")
+        self._send_car_cind_update("Phone HF inferred incoming call")
         self._send_car_result("+CIEV: 1,0", "Phone HF inferred incoming call -> Car AG +CIEV 1,0")
         self._send_car_result("+CIEV: 2,1", "Phone HF inferred incoming call -> Car AG +CIEV 2,1")
 
@@ -716,6 +713,7 @@ class BridgeApp:
     def _flush_pending_car_results(self) -> None:
         if self.car_session.info.service_handle <= 0 or not self._pending_car_results:
             return
+        self._send_car_cind_update("Flushing queued phone->car AG results")
         queued = list(self._pending_car_results)
         self._pending_car_results.clear()
         self._bridge_trace(f"Flushing {len(queued)} queued Phone->Car AG result(s)")
@@ -813,12 +811,18 @@ class BridgeApp:
         self._update_answer_pending_from_call_state()
         if not changed:
             return
-        ag_cind = self._current_ag_cind()
-        self.car_session.ag_set_cind(ag_cind)
-        self._bridge_trace(f"Phone HF +CLCC status {clcc_status} -> Car AG Set CIND {ag_cind}")
+        self._send_car_cind_update(f"Phone HF +CLCC status {clcc_status}")
         self._send_car_result(f"+CIEV: 1,{call_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 1,{call_val}")
         self._send_car_result(f"+CIEV: 2,{setup_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 2,{setup_val}")
         self._send_car_result(f"+CIEV: 3,{held_val}", f"Phone HF +CLCC status {clcc_status} -> Car AG +CIEV 3,{held_val}")
+
+    def _send_car_cind_update(self, reason: str) -> None:
+        ag_cind = self._current_ag_cind()
+        if self.car_session.info.service_handle <= 0:
+            self._bridge_trace(f"Deferred Car AG Set CIND {ag_cind} ({reason}) because no AG service handle is available yet")
+            return
+        self.car_session.ag_set_cind(ag_cind)
+        self._bridge_trace(f"{reason} -> Car AG Set CIND {ag_cind}")
 
     def _is_phone_incoming_call_state(self) -> bool:
         if self._phone_hf_cind[2] == "0" and self._phone_hf_cind[3] == "1":
