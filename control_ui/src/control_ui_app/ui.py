@@ -103,6 +103,7 @@ class BridgeApp:
         self._pending_car_results: list[tuple[str, str]] = []
         self._last_clip_number = ""
         self._last_clip_type = "129"
+        self._call_has_real_clip = False
 
         self._build_ui()
         self.refresh_ports()
@@ -532,6 +533,7 @@ class BridgeApp:
             now = time.monotonic()
             self._last_phone_clip_at = now
             self._last_phone_real_clip_at = now
+            self._call_has_real_clip = True
             clip_number = self._normalize_clip_number(text)
             self._last_clip_number = clip_number
             self._last_clip_type = str(number if number > 0 else 129)
@@ -665,12 +667,18 @@ class BridgeApp:
             return (None, None)
         self._phone_hf_cind[phone_index] = value
         self._update_answer_pending_from_call_state()
+        if self._phone_hf_cind[2] == "0" and self._phone_hf_cind[3] == "0":
+            self._call_has_real_clip = False
+            self._last_clip_number = ""
+            self._last_clip_type = "129"
         if phone_index == 3 and value == "1":
             now = time.monotonic()
             # Fallback: some phone/HF stacks do not emit RING/CLIP consistently after reconnect.
             if (now - self._last_phone_ring_at) > 2.0:
                 self._last_phone_ring_at = now
                 self._send_car_result("RING", "Phone HF +CIEV 3,1 fallback -> Car AG RING")
+            if not self._call_has_real_clip:
+                self._send_car_result('+CLIP: "",129', 'Phone HF +CIEV 3,1 fallback -> Car AG +CLIP: "",129')
             if self._last_clip_number:
                 clip = f'+CLIP: "{self._last_clip_number}",{self._last_clip_type if self._last_clip_type.isdigit() else "129"}'
                 self._send_car_result(clip, f"Phone HF +CIEV 3,1 fallback -> Car AG {clip}")
