@@ -95,6 +95,9 @@ class BridgeApp:
         self._pending_car_clcc_requests = 0
         self._car_answer_pending = False
         self._last_phone_ring_at = 0.0
+        self._pending_phone_hf_at: list[str] = []
+        self._last_clip_number = ""
+        self._last_clip_type = "129"
 
         self._build_ui()
         self.refresh_ports()
@@ -486,6 +489,9 @@ class BridgeApp:
             return
         packet_payload = bytes(raw_payload)
 
+        if side == "phone" and opcode_value == opcode(GROUP_HF, 0x03):
+            self._flush_pending_phone_hf_at()
+
         if side == "phone":
             self._bridge_phone_packet(opcode_value, packet_payload)
         else:
@@ -520,6 +526,8 @@ class BridgeApp:
         elif event_code == 0x09 and text:
             self._bridge_phone_incoming_call_hint()
             clip_number = self._normalize_clip_number(text)
+            self._last_clip_number = clip_number
+            self._last_clip_type = str(number if number > 0 else 129)
             clip = f'+CLIP: "{clip_number}",{number}'
             self._send_car_result(clip, f"Phone HF CLIP {text}/{number} -> Car AG {clip}")
         elif event_code == 0x0A and text:
@@ -589,21 +597,27 @@ class BridgeApp:
                     if not self._is_phone_incoming_call_state():
                         self._bridge_trace("Ignored Car AG AT ATA because phone side is not in incoming-call state")
                         return
-                    self.phone_session.hf_send_raw_at("ATA")
+                    self._send_or_queue_phone_hf_at("ATA", "Car AG ATA")
                     self._pending_car_at_responses += 1
                     self._car_answer_pending = True
                     self._bridge_trace("Car AG AT ATA -> Phone HF raw AT ATA (incoming call)")
                     return
                 if at_upper == "AT+CLCC":
                     self._pending_car_clcc_requests += 1
-                self.phone_session.hf_send_raw_at(at_text)
+                    send_state = self._send_or_queue_phone_hf_at(at_text, "Car AG CLCC request")
+                    if send_state == "queued":
+                        self._send_cached_clcc_to_car("Car AG AT+CLCC while HF handle unavailable")
+                else:
+                    self._send_or_queue_phone_hf_at(at_text, f"Car AG AT {at_text}")
                 self._pending_car_at_responses += 1
                 self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT {at_text}")
             return
         if opcode_value == EVENT_AG_CLCC_REQ:
-            self.phone_session.hf_send_raw_at("AT+CLCC")
+            send_state = self._send_or_queue_phone_hf_at("AT+CLCC", "Car AG CLCC request event")
             self._pending_car_clcc_requests += 1
             self._pending_car_at_responses += 1
+            if send_state == "queued":
+                self._send_cached_clcc_to_car("Car AG CLCC request while HF handle unavailable")
             self._bridge_trace("Car AG CLCC request -> Phone HF raw AT AT+CLCC")
             return
         if opcode_value == opcode(GROUP_AVRC_TARGET, 0x03):
@@ -807,6 +821,32 @@ class BridgeApp:
             self._phone_hf_cind[4] = held_val
             changed = True
         return changed
+
+    def _send_or_queue_phone_hf_at(self, at_text: str, source: str) -> str:
+        if self.phone_session.info.service_handle > 0:
+            self.phone_session.hf_send_raw_at(at_text)
+            return "sent"
+        self._pending_phone_hf_at.append(at_text)
+        self._bridge_trace(f"Queued {source} -> Phone HF raw AT {at_text} (waiting for HF service handle)")
+        return "queued"
+
+    def _flush_pending_phone_hf_at(self) -> None:
+        if self.phone_session.info.service_handle <= 0 or not self._pending_phone_hf_at:
+            return
+        queued = list(self._pending_phone_hf_at)
+        self._pending_phone_hf_at.clear()
+        self._bridge_trace(f"Flushing {len(queued)} queued Car->Phone HF AT command(s)")
+        for at_text in queued:
+            self.phone_session.hf_send_raw_at(at_text)
+
+    def _send_cached_clcc_to_car(self, reason: str) -> None:
+        if not self._is_phone_incoming_call_state():
+            return
+        if not self._last_clip_number:
+            return
+        number_type = self._last_clip_type if self._last_clip_type.isdigit() else "129"
+        clcc = f'+CLCC: 1,1,4,0,0,"{self._last_clip_number}",{number_type}'
+        self._send_car_result(clcc, f"{reason} -> Car AG cached {clcc}")
 
     def _bridge_trace(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
