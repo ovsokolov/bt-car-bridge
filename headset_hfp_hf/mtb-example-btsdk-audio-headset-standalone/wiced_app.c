@@ -105,6 +105,7 @@ static void hf_schedule_autoreconnect_stage(const wiced_bt_device_address_t bd_a
 static void hf_start_autoreconnect(const char *reason, uint32_t delay_seconds);
 static void apply_role_specific_local_address(void);
 static void enable_pairing_visibility_when_unbonded(void);
+static void recover_from_stale_bond(const wiced_bt_device_address_t bd_addr, const char *reason);
 static wiced_bool_t hf_autoreconnect_status_ok_for_progress(wiced_result_t status);
 
 extern wiced_result_t av_app_initiate_sdp(BD_ADDR bda);
@@ -193,6 +194,33 @@ static void enable_pairing_visibility_when_unbonded(void)
 
     WICED_BT_TRACE("[AUTO_%s] no bonded peer: auto-enabled pairable/discoverable/connectable for first-time pairing\n",
                    hf_autoreconnect_role_name());
+}
+
+static void recover_from_stale_bond(const wiced_bt_device_address_t bd_addr, const char *reason)
+{
+    int nvram_id = hci_control_find_nvram_id((uint8_t *)bd_addr, BD_ADDR_LEN);
+
+    if (nvram_id != 0)
+    {
+        WICED_BT_TRACE("[AUTO_%s] stale bond recovery (%s): deleting key id %d for <%B>\n",
+                       hf_autoreconnect_role_name(),
+                       reason,
+                       nvram_id,
+                       bd_addr);
+        hci_control_delete_nvram(nvram_id, WICED_FALSE);
+    }
+
+    wiced_bt_set_pairable_mode(WICED_TRUE, 0);
+    wiced_bt_dev_set_discoverability(BTM_GENERAL_DISCOVERABLE,
+                                     BTM_DEFAULT_DISC_WINDOW,
+                                     BTM_DEFAULT_DISC_INTERVAL);
+    wiced_bt_dev_set_connectability(WICED_TRUE,
+                                    BTM_DEFAULT_CONN_WINDOW,
+                                    BTM_DEFAULT_CONN_INTERVAL);
+
+    WICED_BT_TRACE("[AUTO_%s] stale bond recovery (%s): enabled pairable/discoverable/connectable\n",
+                   hf_autoreconnect_role_name(),
+                   reason);
 }
 
 static wiced_bool_t hf_autoreconnect_status_ok_for_progress(wiced_result_t status)
@@ -681,6 +709,10 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
                 {
                     hf_autoreconnect_restart_full(p_event_data->pairing_complete.bd_addr, 1);
                 }
+                else
+                {
+                    recover_from_stale_bond(p_event_data->pairing_complete.bd_addr, "pairing failure");
+                }
             }
             else
             {
@@ -704,6 +736,11 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
                 le_peripheral_encryption_status_changed(p_encryption_status);
 #endif
             hci_control_send_encryption_changed_evt( p_encryption_status->result, p_encryption_status->bd_addr );
+            if ((p_encryption_status->transport == BT_TRANSPORT_BR_EDR) &&
+                (p_encryption_status->result != WICED_BT_SUCCESS))
+            {
+                recover_from_stale_bond(p_encryption_status->bd_addr, "encryption failure");
+            }
             break;
 
         case BTM_SECURITY_REQUEST_EVT:
