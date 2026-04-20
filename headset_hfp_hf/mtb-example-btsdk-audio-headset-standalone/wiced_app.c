@@ -138,6 +138,8 @@ static void apply_role_specific_local_address(void)
 {
     wiced_bt_device_address_t current_addr = {0};
     wiced_bt_device_address_t desired_addr = {0};
+    wiced_bt_device_address_t effective_addr = {0};
+    wiced_result_t set_status = WICED_BT_SUCCESS;
 
     wiced_bt_dev_read_local_addr(current_addr);
     memcpy(desired_addr, current_addr, BD_ADDR_LEN);
@@ -148,16 +150,20 @@ static void apply_role_specific_local_address(void)
      */
     if (hfp_profile_role == HFP_AUDIO_GATEWAY_ROLE)
     {
-        desired_addr[0] ^= 0x01;
+        /* Flip the low byte in the device-specific portion. */
+        desired_addr[BD_ADDR_LEN - 1] ^= 0x01;
     }
 
     if (memcmp(current_addr, desired_addr, BD_ADDR_LEN) != 0)
     {
-        wiced_bt_set_local_bdaddr(desired_addr, BLE_ADDR_PUBLIC);
-        WICED_BT_TRACE("[AUTO_%s] local address adjusted from <%B> to <%B>\n",
+        set_status = wiced_bt_set_local_bdaddr(desired_addr, BLE_ADDR_PUBLIC);
+        wiced_bt_dev_read_local_addr(effective_addr);
+        WICED_BT_TRACE("[AUTO_%s] set_local_bdaddr status=%d current=<%B> desired=<%B> effective=<%B>\n",
                        hf_autoreconnect_role_name(),
+                       set_status,
                        current_addr,
-                       desired_addr);
+                       desired_addr,
+                       effective_addr);
     }
     else
     {
