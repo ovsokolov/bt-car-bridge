@@ -97,6 +97,7 @@ class BridgeApp:
         self._last_car_ata_forward_at = 0.0
         self._last_phone_ring_at = 0.0
         self._pending_phone_hf_at: list[str] = []
+        self._pending_car_results: list[tuple[str, str]] = []
         self._last_clip_number = ""
         self._last_clip_type = "129"
 
@@ -577,6 +578,9 @@ class BridgeApp:
                 self._bridge_trace("Ignored Phone HF +CME ERROR because there is no pending car-side AT command")
 
     def _bridge_car_packet(self, opcode_value: int, payload: bytes) -> None:
+        if opcode_value in {opcode(0x0E, 0x01), opcode(0x0E, 0x03)}:
+            self._flush_pending_car_results()
+            return
         if opcode_value == EVENT_AG_AUDIO_OPEN:
             self._car_audio_open = True
             self._bridge_trace("Observed Car AG audio open; skipping HF audio forwarding")
@@ -696,10 +700,23 @@ class BridgeApp:
 
     def _send_car_result(self, text: str, trace: str) -> None:
         if self.car_session.info.service_handle <= 0:
-            self._bridge_trace(f"Skipped Car AG send '{text}' because no AG service handle is available yet")
+            if len(self._pending_car_results) >= 60:
+                self._pending_car_results.pop(0)
+            self._pending_car_results.append((text, trace))
+            self._bridge_trace(f"Queued Car AG send '{text}' because no AG service handle is available yet")
             return
         self.car_session.ag_send_string(text)
         self._bridge_trace(trace)
+
+    def _flush_pending_car_results(self) -> None:
+        if self.car_session.info.service_handle <= 0 or not self._pending_car_results:
+            return
+        queued = list(self._pending_car_results)
+        self._pending_car_results.clear()
+        self._bridge_trace(f"Flushing {len(queued)} queued Phone->Car AG result(s)")
+        for text, trace in queued:
+            self.car_session.ag_send_string(text)
+            self._bridge_trace(trace)
 
     def _bridge_hf_audio(self, action: str) -> None:
         if action == "open":
