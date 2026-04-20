@@ -596,27 +596,30 @@ class BridgeApp:
                     if now - self._last_car_ata_forward_at < 0.35:
                         self._bridge_trace("Ignored Car AG AT ATA duplicate burst")
                         return
-                    self._send_or_queue_phone_hf_at("ATA", "Car AG ATA")
-                    self._pending_car_at_responses += 1
-                    self._car_answer_pending = True
-                    self._last_car_ata_forward_at = now
-                    self._bridge_trace("Car AG AT ATA -> Phone HF raw AT ATA")
+                    send_state = self._send_or_queue_phone_hf_at("ATA", "Car AG ATA")
+                    if send_state != "dropped":
+                        self._pending_car_at_responses += 1
+                        self._car_answer_pending = True
+                        self._last_car_ata_forward_at = now
+                        self._bridge_trace("Car AG AT ATA -> Phone HF raw AT ATA")
                     return
                 if at_upper == "AT+CLCC":
                     self._pending_car_clcc_requests += 1
                     send_state = self._send_or_queue_phone_hf_at(at_text, "Car AG CLCC request")
-                    if send_state == "queued":
+                    if send_state in {"queued", "dropped"}:
                         self._send_cached_clcc_to_car("Car AG AT+CLCC while HF handle unavailable")
                 else:
-                    self._send_or_queue_phone_hf_at(at_text, f"Car AG AT {at_text}")
-                self._pending_car_at_responses += 1
-                self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT {at_text}")
+                    send_state = self._send_or_queue_phone_hf_at(at_text, f"Car AG AT {at_text}")
+                if send_state != "dropped":
+                    self._pending_car_at_responses += 1
+                    self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT {at_text}")
             return
         if opcode_value == EVENT_AG_CLCC_REQ:
             send_state = self._send_or_queue_phone_hf_at("AT+CLCC", "Car AG CLCC request event")
             self._pending_car_clcc_requests += 1
-            self._pending_car_at_responses += 1
-            if send_state == "queued":
+            if send_state != "dropped":
+                self._pending_car_at_responses += 1
+            if send_state in {"queued", "dropped"}:
                 self._send_cached_clcc_to_car("Car AG CLCC request while HF handle unavailable")
             self._bridge_trace("Car AG CLCC request -> Phone HF raw AT AT+CLCC")
             return
@@ -826,6 +829,13 @@ class BridgeApp:
         if self.phone_session.info.service_handle > 0:
             self.phone_session.hf_send_raw_at(at_text)
             return "sent"
+        at_upper = at_text.strip().upper()
+        no_queue_prefixes = ("ATA", "AT+CHUP", "AT+CHLD", "ATD", "AT+BLDN", "AT+VTS", "AT+CLCC")
+        if at_upper.startswith(no_queue_prefixes):
+            self._bridge_trace(
+                f"Dropped {source} -> Phone HF raw AT {at_text} because HF service handle is unavailable"
+            )
+            return "dropped"
         self._pending_phone_hf_at.append(at_text)
         self._bridge_trace(f"Queued {source} -> Phone HF raw AT {at_text} (waiting for HF service handle)")
         return "queued"
