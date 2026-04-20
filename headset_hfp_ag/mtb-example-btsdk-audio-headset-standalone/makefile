@@ -97,8 +97,8 @@ TRANSPORT?=UART
 A2DP_SRC_INCLUDED := 1
 AVRCP_TG_INCLUDED := 1
 AVRCP_CT_INCLUDED := 1
-HFP_AG_INCLUDED ?= 1
-HFP_HF_INCLUDED ?= 0
+HFP_AG_INCLUDED := 1
+HFP_HF_INCLUDED := 0
 HCI_TEST_INCLUDED := 1
 LE_INCLUDED := 1
 ANCS_INCLUDED ?= 1
@@ -166,6 +166,16 @@ HFP_HF_INCLUDED = 0
 else
 HFP_AG_INCLUDED = 0
 HFP_HF_INCLUDED = 1
+endif
+endif
+
+# Use deterministic per-role BD_ADDR defaults when caller does not provide one.
+# Format must be 12 hex digits without separators.
+ifeq ($(BT_DEVICE_ADDRESS),default)
+ifeq ($(HFP_AG_INCLUDED),1)
+BT_DEVICE_ADDRESS := 20706A20D340
+else
+BT_DEVICE_ADDRESS := 20706A20D341
 endif
 endif
 
