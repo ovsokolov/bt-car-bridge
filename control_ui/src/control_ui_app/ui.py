@@ -16,6 +16,8 @@ from .hci import (
     EVENT_HF_AT_BASE,
     EVENT_HF_AUDIO_CLOSE,
     EVENT_HF_AUDIO_OPEN,
+    GROUP_AUDIO,
+    GROUP_AVRC_CONTROLLER,
     GROUP_AVRC_TARGET,
     GROUP_HF,
     opcode,
@@ -105,6 +107,28 @@ class BridgeApp:
         self._last_clip_number = ""
         self._last_clip_type = "129"
         self._call_has_real_clip = False
+        self._ring_placeholder_clip_sent = False
+        self._last_phone_avrc_ct_attempt_at = 0.0
+        self._phone_avrc_ct_connected = False
+        self._phone_avrc_tg_connected = False
+        self._last_phone_avrc_control = ""
+        self._last_phone_avrc_control_at = 0.0
+        self._phone_avrc_control_retry_remaining = 0
+        self._pending_phone_avrc_retry: Optional[str] = None
+        self._last_phone_avrc_tg_disconnect_at = 0.0
+        self._car_avrc_tg_connected = False
+        self._car_avrc_tg_notifications_registered = False
+        self._phone_avrc_attr_cache: dict[int, str] = {}
+        self._phone_avrc_play_state = 0
+        self._phone_avrc_song_pos_ms = 0
+        self._last_forwarded_track_signature: tuple[tuple[int, str], ...] = tuple()
+        self._last_forwarded_status_signature: tuple[int, int, int] = (-1, -1, -1)
+        self._last_car_avrc_status_forward_at = 0.0
+        self._pending_car_avrc_track_flush = False
+        self._car_avrc_suppressed_by_call = False
+        self._car_avrc_suppressed_by_hfp = False
+        # Test toggle: disable all Car AVRCP TG push traffic (notifications, metadata, status).
+        self._car_tg_push_enabled = False
 
         self._build_ui()
         self.refresh_ports()
@@ -146,6 +170,10 @@ class BridgeApp:
 
         self._side_widgets["phone"] = self._build_side(phone_frame, "phone", "Phone Board")
         self._side_widgets["car"] = self._build_side(car_frame, "car", "Car Board")
+
+        trace_top = ttk.Frame(trace_tab)
+        trace_top.pack(fill=tk.X, pady=(0, 6))
+        ttk.Button(trace_top, text="Clear Trace", command=self.clear_bridge_trace).pack(side=tk.LEFT)
 
         trace_box = ttk.LabelFrame(trace_tab, text="Unified Bridge Trace (All Sides + Bridge)", padding=8)
         trace_box.pack(fill=tk.BOTH, expand=True)
@@ -296,9 +324,7 @@ class BridgeApp:
             return
         self.sessions[side].info.port = port
         self._sync_port_var_from_device(side)
-        if self.sessions[side].open(port):
-            if side == "phone":
-                self.apply_phone_flags()
+        self.sessions[side].open(port)
         self._save_state()
 
     def close_session(self, side: str) -> None:
@@ -438,6 +464,9 @@ class BridgeApp:
             self._replace_text(widgets.log_text, "")
         self._replace_text(self.bridge_log, "")
 
+    def clear_bridge_trace(self) -> None:
+        self._replace_text(self.bridge_log, "")
+
     def _drain_events(self) -> None:
         try:
             while True:
@@ -496,9 +525,72 @@ class BridgeApp:
 
         if side == "phone" and opcode_value == opcode(GROUP_HF, 0x03) and len(packet_payload) >= 2:
             self._last_phone_hf_handle = packet_payload[0] | (packet_payload[1] << 8)
+            if len(packet_payload) >= 8:
+                remote = ":".join(f"{value:02X}" for value in reversed(packet_payload[2:8]))
+                if remote and not self.phone_session.info.preferred_remote_address:
+                    self.phone_session.info.preferred_remote_address = remote
+                    self._bridge_trace(f"Learned phone peer address from HF service event: {remote}")
 
         if side == "phone" and opcode_value == opcode(GROUP_HF, 0x03):
+            # HF reconnects can happen while AVRCP CT is still valid; do not clear CT state here.
             self._flush_pending_phone_hf_at()
+        if side == "phone" and opcode_value == opcode(GROUP_HF, 0x04):
+            self._phone_avrc_ct_connected = False
+            self._bridge_trace("Phone HF service disconnected; clearing AVRCP CT ready state")
+        if side == "phone" and opcode_value in {opcode(GROUP_AUDIO, 0x02), opcode(GROUP_AVRC_TARGET, 0x01)}:
+            self._learn_phone_peer_from_media_event(packet_payload, opcode_value)
+        if side == "phone" and opcode_value == opcode(GROUP_AVRC_CONTROLLER, 0x01):
+            self._phone_avrc_ct_connected = True
+            self._bridge_trace("Phone AVRCP CT connected; media control forwarding is enabled")
+        if side == "phone" and opcode_value == opcode(GROUP_AVRC_CONTROLLER, 0x02):
+            self._phone_avrc_ct_connected = False
+            self._bridge_trace("Phone AVRCP CT disconnected; media control forwarding is paused")
+        if side == "phone" and opcode_value == opcode(GROUP_AVRC_TARGET, 0x01):
+            self._phone_avrc_tg_connected = True
+            self._bridge_trace("Phone AVRCP TG connected")
+        if side == "phone" and opcode_value == opcode(GROUP_AVRC_TARGET, 0x02):
+            self._phone_avrc_tg_connected = False
+            self._bridge_trace("Phone AVRCP TG disconnected")
+        if side == "phone" and opcode_value == opcode(GROUP_AVRC_TARGET, 0xFF):
+            if packet_payload:
+                status = packet_payload[0]
+                if status == 0x09:
+                    self._bridge_trace("Phone reported AVRCP target Unknown Command while forwarding media control")
+        if side == "phone" and opcode_value == opcode(GROUP_AVRC_CONTROLLER, 0xFF):
+            if packet_payload:
+                status = packet_payload[0]
+                if status != 0:
+                    if self._phone_avrc_ct_connected:
+                        self._bridge_trace(
+                            f"Phone AVRCP CT command status is non-success ({status}) but CT is already connected; keeping CT ready state"
+                        )
+                    else:
+                        self._phone_avrc_ct_connected = False
+                        self._bridge_trace(
+                            f"Phone AVRCP CT command status is non-success ({status}); CT not connected, will retry later"
+                        )
+        if side == "car" and opcode_value == opcode(GROUP_AVRC_TARGET, 0x01):
+            self._car_avrc_tg_connected = True
+            self._car_avrc_tg_notifications_registered = False
+            self._bridge_trace("Car AVRCP TG connected; ready to receive bridged metadata/status")
+            if not self._car_tg_push_enabled:
+                self._bridge_trace("Car AVRCP TG push is disabled for call-behavior testing")
+            else:
+                self.car_session.avrc_tg_register_notifications()
+                self._car_avrc_tg_notifications_registered = True
+                self._bridge_trace("Requested Car AVRCP TG notification registration")
+            self._last_forwarded_track_signature = tuple()
+            self._last_forwarded_status_signature = (-1, -1, -1)
+            if not self._car_tg_push_enabled:
+                pass
+            elif self._car_avrc_suppressed_by_hfp:
+                self._bridge_trace("Deferred cached phone AVRCP push because Car HFP AG session is active")
+            else:
+                self._forward_cached_phone_avrc_to_car()
+        if side == "car" and opcode_value == opcode(GROUP_AVRC_TARGET, 0x02):
+            self._car_avrc_tg_connected = False
+            self._car_avrc_tg_notifications_registered = False
+            self._bridge_trace("Car AVRCP TG disconnected; pausing metadata/status forwarding")
 
         if side == "phone":
             self._bridge_phone_packet(opcode_value, packet_payload)
@@ -506,13 +598,28 @@ class BridgeApp:
             self._bridge_car_packet(opcode_value, packet_payload)
 
     def _bridge_phone_packet(self, opcode_value: int, payload: bytes) -> None:
+        if opcode_value == opcode(GROUP_AVRC_CONTROLLER, 0x03):
+            self._bridge_trace(self._describe_phone_avrc_track_info(payload))
+            self._forward_phone_avrc_track_info_to_car(payload)
+            return
+        if opcode_value == opcode(GROUP_AVRC_CONTROLLER, 0x04):
+            self._bridge_trace(self._describe_phone_avrc_play_status(payload))
+            self._forward_phone_avrc_play_status_to_car(payload)
+            return
+        if opcode_value == opcode(GROUP_AVRC_CONTROLLER, 0x05):
+            self._forward_phone_avrc_position_to_car(payload)
+            return
         if opcode_value == opcode(GROUP_HF, 0x04):
             self._car_answer_pending = False
         if opcode_value == EVENT_HF_AUDIO_OPEN:
-            self._bridge_trace("Observed Phone HF audio open; skipping AG audio forwarding to avoid false answered state")
+            if self._phone_hf_cind[2] != "1":
+                # Some phones transition SCO audio before publishing a stable call=1 CIEV.
+                # Hint active-call state so car HFP UI/audio routing follows the answered call.
+                self._bridge_phone_active_call_hint("Phone HF audio open inferred active call")
+            self._bridge_ag_audio("open")
             return
         if opcode_value == EVENT_HF_AUDIO_CLOSE:
-            self._bridge_trace("Observed Phone HF audio close; skipping AG audio forwarding")
+            self._bridge_ag_audio("close")
             return
         if opcode_value < EVENT_HF_AT_BASE or opcode_value >= opcode(GROUP_HF, 0x40):
             return
@@ -526,6 +633,10 @@ class BridgeApp:
             self._last_phone_real_ring_at = now
             self._bridge_phone_incoming_call_hint()
             self._send_car_result("RING", "Phone HF RING -> Car AG RING")
+            if self._last_clip_number:
+                clip_type = self._last_clip_type if self._last_clip_type.isdigit() else "129"
+                clip = f'+CLIP: "{self._last_clip_number}",{clip_type}'
+                self._send_car_result(clip, f"Phone HF RING with cached caller ID -> Car AG {clip}")
         elif event_code == 0x04:
             self._send_car_result(f"+VGS: {number}", f"Phone HF VGS={number} -> Car AG +VGS")
         elif event_code == 0x05:
@@ -572,7 +683,12 @@ class BridgeApp:
         elif event_code == 0x12 and text:
             self._send_car_result(f"+BIND: {text}", f"Phone HF +BIND {text} -> Car AG +BIND")
         elif event_code == 0x13:
-            self._send_car_result(f"+BCS: {number}", f"Phone HF +BCS {number} -> Car AG +BCS")
+            if self._phone_hf_cind[2] != "1":
+                self._bridge_trace(
+                    f"Ignored Phone HF +BCS {number} while call is not active (prevents premature codec/audio negotiation)"
+                )
+            else:
+                self._send_car_result(f"+BCS: {number}", f"Phone HF +BCS {number} -> Car AG +BCS")
         elif event_code == 0x00:
             if self._pending_car_at_responses > 0:
                 self._pending_car_at_responses -= 1
@@ -594,31 +710,64 @@ class BridgeApp:
 
     def _bridge_car_packet(self, opcode_value: int, payload: bytes) -> None:
         if opcode_value in {opcode(0x0E, 0x01), opcode(0x0E, 0x03)}:
+            if not self._car_avrc_suppressed_by_hfp:
+                self._car_avrc_suppressed_by_hfp = True
+                self._bridge_trace("Paused Car AVRCP TG metadata/status forwarding while Car HFP AG session is active")
             self._flush_pending_car_results()
+            return
+        if opcode_value == opcode(0x0E, 0x02):
+            if self._car_avrc_suppressed_by_hfp:
+                self._car_avrc_suppressed_by_hfp = False
+                self._bridge_trace("Resumed Car AVRCP TG metadata/status forwarding after Car HFP AG session closed")
+                self._forward_cached_phone_avrc_to_car()
             return
         if opcode_value == EVENT_AG_AUDIO_OPEN:
             self._car_audio_open = True
-            if (not self._car_answer_pending) and self._phone_hf_cind[2] != "1":
-                self._bridge_trace(
-                    "Observed Car AG audio open without approved answer path; closing AG audio to avoid false auto-answer"
-                )
-                self.car_session.ag_audio_close()
-                self._car_audio_open = False
-                return
-            self._bridge_trace("Observed Car AG audio open; skipping HF audio forwarding")
+            self._bridge_trace("Observed Car AG audio open")
             return
         if opcode_value == EVENT_AG_AUDIO_CLOSE:
             self._car_audio_open = False
-            self._bridge_trace("Observed Car AG audio close; skipping HF audio forwarding")
+            self._bridge_trace("Observed Car AG audio close")
             return
         if opcode_value == EVENT_AG_AT_CMD:
             handle, at_text = self._parse_ag_at_payload(payload)
             if at_text:
                 at_upper = at_text.strip().upper()
                 if at_upper.startswith("AT+CHLD"):
-                    if self._phone_hf_cind[2] != "1":
+                    if at_upper == "AT+CHLD=0" and self._is_phone_incoming_call_state():
+                        send_state = self._send_or_queue_phone_hf_at(
+                            "AT+CHUP",
+                            "Car AG CHLD=0 reject",
+                            allow_stale_handle=True,
+                        )
+                        if send_state != "dropped":
+                            self._pending_car_at_responses += 1
+                            self._bridge_trace("Car AG AT AT+CHLD=0 -> Phone HF raw AT AT+CHUP (reject incoming)")
+                        return
+                    if at_upper == "AT+CHLD=2" and self._is_phone_incoming_call_state():
+                        now = time.monotonic()
+                        if now - self._last_car_ata_forward_at < 0.35:
+                            self._bridge_trace("Ignored Car AG AT AT+CHLD=2 duplicate burst during incoming-call answer")
+                            return
+                        send_state = self._send_or_queue_phone_hf_at(
+                            "ATA",
+                            "Car AG CHLD=2 answer",
+                            allow_stale_handle=True,
+                        )
+                        if send_state != "dropped":
+                            self._pending_car_at_responses += 1
+                            self._car_answer_pending = True
+                            self._last_car_ata_forward_at = now
+                            self._bridge_trace("Car AG AT AT+CHLD=2 -> Phone HF raw AT ATA (answer incoming)")
+                        return
+                    if self._phone_hf_cind[2] != "1" or self._phone_hf_cind[3] != "0":
                         self._bridge_trace(
-                            f"Ignored Car AG AT {at_text} while call is not active (prevents unsolicited auto-answer)"
+                            f"Ignored Car AG AT {at_text} while call is not active/stable (prevents unsolicited auto-answer)"
+                        )
+                        return
+                    if self.phone_session.info.service_handle <= 0:
+                        self._bridge_trace(
+                            f"Dropped Car AG AT {at_text} because HF service handle is unavailable (avoid stale hold/answer control)"
                         )
                         return
                 if at_upper.startswith("AT+BCS"):
@@ -635,18 +784,30 @@ class BridgeApp:
                     if not self._is_phone_answer_window():
                         self._bridge_trace("Ignored Car AG AT ATA because no valid incoming-call answer window is active")
                         return
-                    send_state = self._send_or_queue_phone_hf_at("ATA", "Car AG ATA")
+                    send_state = self._send_or_queue_phone_hf_at("ATA", "Car AG ATA", allow_stale_handle=True)
                     if send_state != "dropped":
                         self._pending_car_at_responses += 1
                         self._car_answer_pending = True
                         self._last_car_ata_forward_at = now
                         self._bridge_trace("Car AG AT ATA -> Phone HF raw AT ATA")
                     return
-                if at_upper == "AT+CLCC":
+                if at_upper == "AT+CHUP":
+                    send_state = self._send_or_queue_phone_hf_at(
+                        at_text,
+                        f"Car AG AT {at_text}",
+                        allow_stale_handle=True,
+                    )
+                elif at_upper == "AT+CLCC":
                     self._pending_car_clcc_requests += 1
-                    send_state = self._send_or_queue_phone_hf_at(at_text, "Car AG CLCC request")
+                    allow_stale_clcc = self._is_phone_incoming_call_state() or self._phone_hf_cind[2] == "1"
+                    send_state = self._send_or_queue_phone_hf_at(
+                        at_text,
+                        "Car AG CLCC request",
+                        allow_stale_handle=allow_stale_clcc,
+                    )
                     if send_state in {"queued", "dropped"}:
-                        self._send_cached_clcc_to_car("Car AG AT+CLCC while HF handle unavailable")
+                        if self._send_cached_clcc_to_car("Car AG AT+CLCC while HF handle unavailable"):
+                            self._pending_car_clcc_requests = max(0, self._pending_car_clcc_requests - 1)
                 else:
                     send_state = self._send_or_queue_phone_hf_at(at_text, f"Car AG AT {at_text}")
                 if send_state != "dropped":
@@ -654,29 +815,30 @@ class BridgeApp:
                     self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT {at_text}")
             return
         if opcode_value == EVENT_AG_CLCC_REQ:
-            send_state = self._send_or_queue_phone_hf_at("AT+CLCC", "Car AG CLCC request event")
             self._pending_car_clcc_requests += 1
+            allow_stale_clcc = self._is_phone_incoming_call_state() or self._phone_hf_cind[2] == "1"
+            send_state = self._send_or_queue_phone_hf_at(
+                "AT+CLCC",
+                "Car AG CLCC request event",
+                allow_stale_handle=allow_stale_clcc,
+            )
             if send_state != "dropped":
                 self._pending_car_at_responses += 1
             if send_state in {"queued", "dropped"}:
-                self._send_cached_clcc_to_car("Car AG CLCC request while HF handle unavailable")
+                if self._send_cached_clcc_to_car("Car AG CLCC request while HF handle unavailable"):
+                    self._pending_car_clcc_requests = max(0, self._pending_car_clcc_requests - 1)
             self._bridge_trace("Car AG CLCC request -> Phone HF raw AT AT+CLCC")
             return
         if opcode_value == opcode(GROUP_AVRC_TARGET, 0x03):
-            self.phone_session.avrc_play()
-            self._bridge_trace("Car AVRCP Play received -> Phone AVRCP Play command")
+            self._send_phone_avrc_control("play", "Car AVRCP Play received")
         elif opcode_value == opcode(GROUP_AVRC_TARGET, 0x04):
-            self.phone_session.avrc_stop()
-            self._bridge_trace("Car AVRCP Stop received -> Phone AVRCP Stop command")
+            self._send_phone_avrc_control("stop", "Car AVRCP Stop received")
         elif opcode_value == opcode(GROUP_AVRC_TARGET, 0x05):
-            self.phone_session.avrc_pause()
-            self._bridge_trace("Car AVRCP Pause received -> Phone AVRCP Pause command")
+            self._send_phone_avrc_control("pause", "Car AVRCP Pause received")
         elif opcode_value == opcode(GROUP_AVRC_TARGET, 0x06):
-            self.phone_session.avrc_next()
-            self._bridge_trace("Car AVRCP Next received -> Phone AVRCP Next command")
+            self._send_phone_avrc_control("next", "Car AVRCP Next received")
         elif opcode_value == opcode(GROUP_AVRC_TARGET, 0x07):
-            self.phone_session.avrc_prev()
-            self._bridge_trace("Car AVRCP Previous received -> Phone AVRCP Previous command")
+            self._send_phone_avrc_control("prev", "Car AVRCP Previous received")
 
     def _bridge_phone_ciev_to_car(self, text: str) -> tuple[Optional[int], Optional[str]]:
         parts = [part.strip() for part in text.split(",", 1)]
@@ -692,10 +854,12 @@ class BridgeApp:
             return (None, None)
         self._phone_hf_cind[phone_index] = value
         self._update_answer_pending_from_call_state()
+        self._update_car_avrc_call_gate(f"Phone HF +CIEV {phone_index},{value}")
         if self._phone_hf_cind[2] == "0" and self._phone_hf_cind[3] == "0":
             self._call_has_real_clip = False
             self._last_clip_number = ""
             self._last_clip_type = "129"
+            self._ring_placeholder_clip_sent = False
         if phone_index == 3 and value == "1":
             now = time.monotonic()
             # Fallback: some phone/HF stacks do not emit RING/CLIP consistently after reconnect.
@@ -703,7 +867,17 @@ class BridgeApp:
                 self._last_phone_ring_at = now
                 self._send_car_result("RING", "Phone HF +CIEV 3,1 fallback -> Car AG RING")
             if not self._call_has_real_clip:
-                self._send_car_result('+CLIP: "",129', 'Phone HF +CIEV 3,1 fallback -> Car AG +CLIP: "",129')
+                if not self._ring_placeholder_clip_sent:
+                    placeholder_clip = '+CLIP: "",129'
+                    self._send_car_result(
+                        placeholder_clip,
+                        f"Phone HF +CIEV 3,1 fallback -> Car AG {placeholder_clip} (placeholder caller ID)",
+                    )
+                    self._ring_placeholder_clip_sent = True
+                else:
+                    self._bridge_trace(
+                        "Phone HF +CIEV 3,1 fallback: waiting for real caller ID (CLIP/CLCC), placeholder +CLIP already sent"
+                    )
             if self._last_clip_number:
                 clip = f'+CLIP: "{self._last_clip_number}",{self._last_clip_type if self._last_clip_type.isdigit() else "129"}'
                 self._send_car_result(clip, f"Phone HF +CIEV 3,1 fallback -> Car AG {clip}")
@@ -724,6 +898,16 @@ class BridgeApp:
         self._send_car_cind_update("Phone HF inferred incoming call")
         self._send_car_result("+CIEV: 1,0", "Phone HF inferred incoming call -> Car AG +CIEV 1,0")
         self._send_car_result("+CIEV: 2,1", "Phone HF inferred incoming call -> Car AG +CIEV 2,1")
+
+    def _bridge_phone_active_call_hint(self, reason: str) -> None:
+        changed = self._set_call_indicators("1", "0", "0")
+        self._update_answer_pending_from_call_state()
+        if not changed:
+            return
+        self._send_car_cind_update(reason)
+        self._send_car_result("+CIEV: 1,1", f"{reason} -> Car AG +CIEV 1,1")
+        self._send_car_result("+CIEV: 2,0", f"{reason} -> Car AG +CIEV 2,0")
+        self._send_car_result("+CIEV: 3,0", f"{reason} -> Car AG +CIEV 3,0")
 
     def _convert_phone_cind_to_ag(self, text: str) -> str:
         values = [part.strip() for part in text.split(",")]
@@ -857,6 +1041,7 @@ class BridgeApp:
         call_val, setup_val, held_val = updates
         changed = self._set_call_indicators(call_val, setup_val, held_val)
         self._update_answer_pending_from_call_state()
+        self._update_car_avrc_call_gate(f"Phone HF +CLCC status {clcc_status}")
         if not changed:
             return
         self._send_car_cind_update(f"Phone HF +CLCC status {clcc_status}")
@@ -877,17 +1062,42 @@ class BridgeApp:
             return True
         return self._phone_hf_cind[2] == "0" and (time.monotonic() - self._last_phone_ring_at) <= 8.0
 
+    def _is_phone_call_state_busy(self) -> bool:
+        if self._phone_hf_cind[2] != "0":
+            return True
+        if self._phone_hf_cind[3] != "0":
+            return True
+        return self._phone_hf_cind[4] != "0"
+
+    def _update_car_avrc_call_gate(self, reason: str) -> None:
+        busy = self._is_phone_call_state_busy() or self._is_phone_incoming_call_state()
+        if busy:
+            if not self._car_avrc_suppressed_by_call:
+                self._car_avrc_suppressed_by_call = True
+                self._bridge_trace(f"Paused Car AVRCP TG metadata/status forwarding during call state ({reason})")
+            return
+        if self._car_avrc_suppressed_by_call:
+            self._car_avrc_suppressed_by_call = False
+            self._bridge_trace(f"Resumed Car AVRCP TG metadata/status forwarding after call state cleared ({reason})")
+            self._forward_cached_phone_avrc_to_car()
+
     def _is_phone_answer_window(self) -> bool:
         if not self._is_phone_incoming_call_state():
             return False
         now = time.monotonic()
-        # Only a real phone-originated RING/CLIP may authorize ATA forwarding.
+        # Prefer real phone-originated RING/CLIP, but fall back to inferred incoming-ring timing
+        # so legitimate car "answer" presses are not blocked on stacks that skip explicit RING/CLIP.
         last_signal_at = max(self._last_phone_real_ring_at, self._last_phone_real_clip_at)
         if last_signal_at <= 0:
-            return False
+            last_signal_at = self._last_phone_ring_at
+        if last_signal_at <= 0:
+            # Some stacks only expose callsetup=1 without timely RING/CLIP indications.
+            # If we're clearly in incoming-call state, allow answer instead of hard-blocking.
+            return self._phone_hf_cind[3] == "1"
         age = now - last_signal_at
-        # Block "instant" ATA bursts that appear before a human can react.
-        return 0.8 <= age <= 8.0
+        # Keep a small lower bound for de-bounce, but do not block quick legitimate button presses.
+        # Keep a wider upper bound so delayed user answer presses still work.
+        return 0.1 <= age <= 30.0
 
     def _update_answer_pending_from_call_state(self) -> None:
         # Clear pending answer state as soon as the call leaves "incoming setup".
@@ -909,23 +1119,34 @@ class BridgeApp:
             changed = True
         return changed
 
-    def _send_or_queue_phone_hf_at(self, at_text: str, source: str) -> str:
+    def _send_or_queue_phone_hf_at(self, at_text: str, source: str, allow_stale_handle: bool = False) -> str:
         if self.phone_session.info.service_handle > 0:
             self.phone_session.hf_send_raw_at(at_text)
             return "sent"
         at_upper = at_text.strip().upper()
-        if self._last_phone_hf_handle > 0 and not self._is_bootstrap_car_ag_at(at_upper):
+        is_bootstrap = self._is_bootstrap_car_ag_at(at_upper)
+        if is_bootstrap:
+            # Keep AG bootstrap negotiation intact across startup races.
+            # Dropping these causes missing CLIP/CMER subscription and call forwarding gaps.
+            if len(self._pending_phone_hf_at) >= 80:
+                self._pending_phone_hf_at.pop(0)
+            self._pending_phone_hf_at.append(at_text)
+            self._bridge_trace(
+                f"Queued {source} bootstrap AT {at_text} (waiting for HF service handle)"
+            )
+            return "queued"
+        # For explicit user call-control actions only, allow sending on last known HF handle.
+        if allow_stale_handle and self._last_phone_hf_handle > 0:
             self.phone_session.hf_send_raw_at(at_text, handle=self._last_phone_hf_handle)
             self._bridge_trace(
                 f"Sent {source} -> Phone HF raw AT {at_text} using last known HF handle {self._last_phone_hf_handle}"
             )
             return "sent"
-        if self._is_bootstrap_car_ag_at(at_upper):
+        if self._last_phone_hf_handle > 0:
             self._bridge_trace(
-                f"Dropped {source} bootstrap AT {at_text} because HF service handle is unavailable"
+                f"HF service handle unavailable; refusing stale-handle send for {source} AT {at_text}"
             )
-            return "dropped"
-        no_queue_prefixes = ("ATA", "ATD", "AT+BLDN", "AT+VTS", "AT+CLCC", "AT+CHLD", "AT+BCS")
+        no_queue_prefixes = ("ATA", "ATD", "AT+BLDN", "AT+VTS", "AT+CLCC", "AT+CHLD", "AT+BCS", "AT+CHUP")
         if at_upper.startswith(no_queue_prefixes):
             self._bridge_trace(
                 f"Dropped {source} -> Phone HF raw AT {at_text} because HF service handle is unavailable"
@@ -967,14 +1188,306 @@ class BridgeApp:
         for at_text in queued:
             self.phone_session.hf_send_raw_at(at_text)
 
-    def _send_cached_clcc_to_car(self, reason: str) -> None:
+    def _send_cached_clcc_to_car(self, reason: str) -> bool:
         if not self._is_phone_incoming_call_state():
-            return
+            return False
         if not self._last_clip_number:
-            return
+            return False
         number_type = self._last_clip_type if self._last_clip_type.isdigit() else "129"
         clcc = f'+CLCC: 1,1,4,0,0,"{self._last_clip_number}",{number_type}'
         self._send_car_result(clcc, f"{reason} -> Car AG cached {clcc}")
+        return True
+
+    def _ensure_phone_avrc_ct_link(self) -> None:
+        if self._phone_avrc_ct_connected:
+            return
+        address = self.phone_session.info.preferred_remote_address.strip()
+        if not address:
+            self._bridge_trace("Cannot request Phone AVRCP CT connect yet: phone peer address is unknown")
+            return
+        now = time.monotonic()
+        if now - self._last_phone_avrc_ct_attempt_at < 5.0:
+            return
+        self._last_phone_avrc_ct_attempt_at = now
+        self.phone_session.avrc_ct_connect(address)
+        self._bridge_trace(f"Requested Phone AVRCP CT connect to {address} for metadata/control events")
+
+    def _request_phone_avrc_tg_disconnect(self, reason: str) -> None:
+        now = time.monotonic()
+        if now - self._last_phone_avrc_tg_disconnect_at < 1.0:
+            return
+        self._last_phone_avrc_tg_disconnect_at = now
+        self.phone_session.avrc_tg_disconnect()
+        self._bridge_trace(f"{reason} -> requested Phone AVRCP TG disconnect so CT commands are accepted")
+
+    def _send_phone_avrc_control(self, command: str, source: str, is_retry: bool = False) -> None:
+        action_map = {
+            "play": self.phone_session.avrc_play,
+            "pause": self.phone_session.avrc_pause,
+            "stop": self.phone_session.avrc_stop,
+            "next": self.phone_session.avrc_next,
+            "prev": self.phone_session.avrc_prev,
+        }
+        action = action_map.get(command)
+        if action is None:
+            self._bridge_trace(f"Skipped forwarding {source} because AVRCP command '{command}' is unsupported")
+            return
+        if not self._phone_avrc_ct_connected:
+            self._bridge_trace(
+                f"Skipped forwarding {source} because phone AVRCP CT link is not connected "
+                "(UI passive profile mode: no auto connect/disconnect)"
+            )
+            return
+        if not is_retry:
+            self._last_phone_avrc_control = command
+            self._last_phone_avrc_control_at = time.monotonic()
+            self._phone_avrc_control_retry_remaining = 1
+        action()
+        self._bridge_trace(f"{source} -> Phone AVRCP {command.upper()} command")
+
+    def _queue_phone_avrc_retry(self, command: str) -> None:
+        if not command:
+            return
+        self._pending_phone_avrc_retry = command
+        if self._phone_avrc_tg_connected:
+            self._request_phone_avrc_tg_disconnect("Queued phone AVRCP retry")
+            return
+        self.root.after(150, self._retry_pending_phone_avrc_control)
+
+    def _retry_pending_phone_avrc_control(self) -> None:
+        command = self._pending_phone_avrc_retry
+        if not command:
+            return
+        if not self._phone_avrc_ct_connected:
+            self._ensure_phone_avrc_ct_link()
+            return
+        if self._phone_avrc_tg_connected:
+            self._request_phone_avrc_tg_disconnect("Pending phone AVRCP retry")
+            return
+        if self._phone_avrc_control_retry_remaining <= 0:
+            self._pending_phone_avrc_retry = None
+            self._bridge_trace(f"Skipped AVRCP retry for {command.upper()} because retry budget is exhausted")
+            return
+        self._phone_avrc_control_retry_remaining -= 1
+        self._pending_phone_avrc_retry = None
+        self._send_phone_avrc_control(command, "Retried Car AVRCP control", is_retry=True)
+
+    def _learn_phone_peer_from_media_event(self, payload: bytes, opcode_value: int) -> None:
+        if len(payload) < 6:
+            return
+        remote = ":".join(f"{value:02X}" for value in reversed(payload[:6]))
+        if not remote:
+            return
+        if self.phone_session.info.preferred_remote_address == remote:
+            return
+        self.phone_session.info.preferred_remote_address = remote
+        if opcode_value == opcode(GROUP_AUDIO, 0x02):
+            source = "phone A2DP connected event"
+        else:
+            source = "phone AVRCP TG connected event"
+        self._bridge_trace(f"Learned phone peer address from {source}: {remote}")
+
+    def _is_car_avrc_tg_ready(self) -> bool:
+        return self._car_avrc_tg_connected or self.car_session.info.avrc_connected
+
+    def _parse_phone_avrc_track_info_payload(self, payload: bytes) -> Optional[tuple[int, str]]:
+        if len(payload) < 6:
+            return None
+        attr_id = ((payload[2] << 8) | payload[3]) & 0xFF
+        text_len = payload[4] | (payload[5] << 8)
+        text_bytes = payload[6 : 6 + text_len]
+        text = text_bytes.decode("utf-8", errors="ignore").strip("\x00")
+        return (attr_id, text)
+
+    def _parse_phone_avrc_play_state(self, payload: bytes) -> Optional[int]:
+        if len(payload) >= 3:
+            return payload[2]
+        return None
+
+    def _parse_phone_avrc_song_pos_ms(self, payload: bytes) -> Optional[int]:
+        if len(payload) >= 6:
+            return int.from_bytes(payload[2:6], "little", signed=False)
+        return None
+
+    def _duration_text_to_ms(self, text: str) -> int:
+        stripped = text.strip()
+        if not stripped:
+            return 0
+        try:
+            value = int(stripped)
+        except ValueError:
+            return 0
+        if value < 0:
+            return 0
+        # Phone metadata typically reports duration in seconds for AVRCP attr 0x07.
+        if value < 100000:
+            return value * 1000
+        return value
+
+    def _current_phone_song_len_ms(self) -> int:
+        duration_text = self._phone_avrc_attr_cache.get(0x07, "")
+        return self._duration_text_to_ms(duration_text)
+
+    def _forward_current_phone_play_status_to_car(self, reason: str) -> None:
+        if not self._car_tg_push_enabled:
+            return
+        if not self._is_car_avrc_tg_ready():
+            return
+        if self._car_avrc_suppressed_by_hfp:
+            return
+        if self._car_avrc_suppressed_by_call:
+            return
+        song_len_ms = self._current_phone_song_len_ms()
+        signature = (self._phone_avrc_play_state, song_len_ms, self._phone_avrc_song_pos_ms)
+        if signature == self._last_forwarded_status_signature:
+            return
+        last_state, last_len, last_pos = self._last_forwarded_status_signature
+        if (
+            last_state == signature[0]
+            and last_len == signature[1]
+            and last_pos >= 0
+            and abs(signature[2] - last_pos) < 3000
+            and (time.monotonic() - self._last_car_avrc_status_forward_at) < 1.0
+        ):
+            return
+        self.car_session.avrc_tg_player_status(signature[0], signature[1], signature[2])
+        self._last_forwarded_status_signature = signature
+        self._last_car_avrc_status_forward_at = time.monotonic()
+        self._bridge_trace(
+            f"{reason} -> Car AVRCP TG player status state={signature[0]}, len_ms={signature[1]}, pos_ms={signature[2]}"
+        )
+
+    def _forward_phone_avrc_track_info_to_car(self, payload: bytes) -> None:
+        parsed = self._parse_phone_avrc_track_info_payload(payload)
+        if parsed is None:
+            return
+        attr_id, text = parsed
+        if not (0x01 <= attr_id <= 0x07):
+            return
+        previous = self._phone_avrc_attr_cache.get(attr_id)
+        self._phone_avrc_attr_cache[attr_id] = text
+        if not self._car_tg_push_enabled:
+            return
+        if self._car_avrc_suppressed_by_hfp:
+            return
+        if self._car_avrc_suppressed_by_call:
+            return
+        if not self._is_car_avrc_tg_ready():
+            return
+        if previous == text:
+            return
+        self._schedule_car_avrc_track_flush()
+
+    def _forward_phone_avrc_play_status_to_car(self, payload: bytes) -> None:
+        state = self._parse_phone_avrc_play_state(payload)
+        if state is None:
+            return
+        self._phone_avrc_play_state = state
+        self._forward_current_phone_play_status_to_car("Phone AVRCP play status")
+
+    def _forward_phone_avrc_position_to_car(self, payload: bytes) -> None:
+        song_pos_ms = self._parse_phone_avrc_song_pos_ms(payload)
+        if song_pos_ms is None:
+            return
+        self._phone_avrc_song_pos_ms = song_pos_ms
+
+    def _forward_cached_phone_avrc_to_car(self) -> None:
+        if not self._car_tg_push_enabled:
+            return
+        if not self._is_car_avrc_tg_ready():
+            return
+        if self._car_avrc_suppressed_by_hfp:
+            return
+        if self._car_avrc_suppressed_by_call:
+            return
+        if self._phone_avrc_attr_cache:
+            self._flush_car_avrc_track_info("Re-sent cached phone AVRCP metadata to Car AVRCP TG after reconnect")
+        self._forward_current_phone_play_status_to_car("Re-sent cached phone AVRCP status")
+
+    def _schedule_car_avrc_track_flush(self) -> None:
+        if self._pending_car_avrc_track_flush:
+            return
+        self._pending_car_avrc_track_flush = True
+        self.root.after(120, self._flush_car_avrc_track_info)
+
+    def _flush_car_avrc_track_info(self, reason: str = "Phone AVRCP track metadata") -> None:
+        self._pending_car_avrc_track_flush = False
+        if not self._car_tg_push_enabled:
+            return
+        if not self._is_car_avrc_tg_ready():
+            return
+        if self._car_avrc_suppressed_by_hfp:
+            return
+        if self._car_avrc_suppressed_by_call:
+            return
+        if not self._phone_avrc_attr_cache:
+            return
+        attributes: list[tuple[int, str]] = []
+        for aid in sorted(self._phone_avrc_attr_cache):
+            text = self._phone_avrc_attr_cache.get(aid, "").strip()
+            # Many car head units ignore/behave poorly with zero-length metadata attributes.
+            # Forward only meaningful text values.
+            if not text:
+                continue
+            attributes.append((aid, text))
+        if not attributes:
+            # Keep a minimal valid title so TG receives at least one concrete attribute.
+            attributes = [(0x01, "Not Provided")]
+        signature = tuple(attributes)
+        if signature == self._last_forwarded_track_signature:
+            return
+        self.car_session.avrc_tg_track_info(attributes)
+        self._last_forwarded_track_signature = signature
+        self._bridge_trace(f"{reason} -> Car AVRCP TG ({len(attributes)} attribute(s))")
+        self._forward_current_phone_play_status_to_car("Track metadata update")
+
+    def _describe_phone_avrc_track_info(self, payload: bytes) -> str:
+        if len(payload) >= 6:
+            # Observed format on this SDK:
+            # [handle_le:2][attr_id_be:2][text_len_le:2][utf8_text...]
+            attr_id = (payload[2] << 8) | payload[3]
+            text_len = payload[4] | (payload[5] << 8)
+            text_bytes = payload[6 : 6 + text_len]
+            text = text_bytes.decode("utf-8", errors="ignore").strip("\x00 \r\n\t")
+            attr_name = {
+                0x0001: "title",
+                0x0002: "artist",
+                0x0003: "album",
+                0x0004: "track",
+                0x0005: "total tracks",
+                0x0006: "genre",
+                0x0007: "duration",
+            }.get(attr_id, f"attr 0x{attr_id:04X}")
+            if text:
+                return f"Phone AVRCP Track Info observed: {attr_name}='{text}'"
+            hex_text = " ".join(f"{b:02X}" for b in payload)
+            return f"Phone AVRCP Track Info observed ({attr_name}, empty text, hex: {hex_text})"
+        text = payload.decode("utf-8", errors="ignore").strip("\x00 \r\n\t")
+        if text:
+            return f"Phone AVRCP Track Info observed: {text}"
+        hex_text = " ".join(f"{b:02X}" for b in payload) if payload else "none"
+        return f"Phone AVRCP Track Info observed (non-text payload, hex: {hex_text})"
+
+    def _describe_phone_avrc_play_status(self, payload: bytes) -> str:
+        if not payload:
+            return "Phone AVRCP Play Status observed (empty payload)"
+        hex_text = " ".join(f"{b:02X}" for b in payload)
+        # Observed format on this SDK: [handle_le:2][play_status:1]
+        if len(payload) >= 3:
+            state = payload[2]
+            state_name = {
+                0: "stopped",
+                1: "playing",
+                2: "paused",
+                3: "fwd-seek",
+                4: "rev-seek",
+                0xFF: "error",
+            }.get(state, f"unknown({state})")
+            return f"Phone AVRCP Play Status observed: {state_name} (state={state}, hex: {hex_text})"
+        if len(payload) >= 1:
+            state = payload[0]
+            return f"Phone AVRCP Play Status observed: state={state} (hex: {hex_text})"
+        return f"Phone AVRCP Play Status observed (hex: {hex_text})"
 
     def _bridge_trace(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")

@@ -53,3 +53,6 @@
 ## Notes
 - `AGENT.md` remained readable and should be treated as the most trustworthy local project note.
 - The rebuilt docs are intentionally minimal and factual so they can serve as a clean baseline after corruption.
+
+## Process Guardrail
+- From now on, every behavior/code change must be committed immediately after a quick validation step (good or bad result). Do not batch multiple experiments into one uncommitted working tree state.
