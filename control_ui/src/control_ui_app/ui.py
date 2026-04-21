@@ -101,6 +101,7 @@ class BridgeApp:
         self._last_phone_clip_at = 0.0
         self._last_phone_real_ring_at = 0.0
         self._last_phone_real_clip_at = 0.0
+        self._last_phone_clcc_probe_at = 0.0
         self._last_phone_hf_handle = 0
         self._pending_phone_hf_at: list[str] = []
         self._pending_car_results: list[tuple[str, str]] = []
@@ -667,12 +668,20 @@ class BridgeApp:
         elif event_code == 0x11 and text:
             normalized_clcc = self._normalize_clcc(text)
             self._apply_call_state_from_clcc(normalized_clcc)
-            if self._pending_car_clcc_requests > 0:
-                self._pending_car_clcc_requests -= 1
+            # Forward CLCC during incoming-call recovery even if the car did not explicitly
+            # request it, because some head units rely on CLCC/CLIP to open call UI.
+            forward_incoming_recovery = self._is_phone_incoming_call_state() and not self._call_has_real_clip
+            if self._pending_car_clcc_requests > 0 or forward_incoming_recovery:
+                self._pending_car_clcc_requests = max(0, self._pending_car_clcc_requests - 1)
                 self._send_car_result(f"+CLCC: {normalized_clcc}", f"Phone HF +CLCC {text} -> Car AG +CLCC {normalized_clcc}")
                 clip_from_clcc = self._clip_from_clcc(normalized_clcc)
                 if clip_from_clcc:
                     self._send_car_result(clip_from_clcc, f"Phone HF +CLCC {normalized_clcc} -> Car AG {clip_from_clcc}")
+                    clcc_parts = [part.strip() for part in normalized_clcc.split(",")]
+                    if len(clcc_parts) >= 7:
+                        self._last_clip_number = clcc_parts[5].strip().strip('"')
+                        self._last_clip_type = clcc_parts[6].strip().strip('"') or "129"
+                        self._call_has_real_clip = True
             else:
                 self._bridge_trace(f"Ignored Phone HF +CLCC {text} because car did not request CLCC")
         elif event_code == 0x12 and text:
@@ -866,16 +875,16 @@ class BridgeApp:
                 self._last_phone_ring_at = now
                 self._send_car_result("RING", "Phone HF +CIEV 3,1 fallback -> Car AG RING")
             if not self._call_has_real_clip:
-                if not self._ring_placeholder_clip_sent:
-                    placeholder_clip = '+CLIP: "",129'
-                    self._send_car_result(
-                        placeholder_clip,
-                        f"Phone HF +CIEV 3,1 fallback -> Car AG {placeholder_clip} (placeholder caller ID)",
+                if (now - self._last_phone_clcc_probe_at) > 2.0:
+                    self._last_phone_clcc_probe_at = now
+                    self._pending_car_clcc_requests += 1
+                    send_state = self._send_or_queue_phone_hf_at(
+                        "AT+CLCC",
+                        "Phone HF +CIEV 3,1 fallback CLCC probe",
+                        allow_stale_handle=True,
                     )
-                    self._ring_placeholder_clip_sent = True
-                else:
                     self._bridge_trace(
-                        "Phone HF +CIEV 3,1 fallback: waiting for real caller ID (CLIP/CLCC), placeholder +CLIP already sent"
+                        f"Phone HF +CIEV 3,1 fallback: requested CLCC probe ({send_state}) waiting for real caller ID"
                     )
             if self._last_clip_number:
                 clip = f'+CLIP: "{self._last_clip_number}",{self._last_clip_type if self._last_clip_type.isdigit() else "129"}'
