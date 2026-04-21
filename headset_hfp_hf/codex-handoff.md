@@ -56,3 +56,9 @@
 
 ## Process Guardrail
 - From now on, every behavior/code change must be committed immediately after a quick validation step (good or bad result). Do not batch multiple experiments into one uncommitted working tree state.
+
+## Legacy UI References
+- Old host control UI reference path (read-only baseline for call-flow behavior):
+  - `C:\BT_Projects\headset_hfp_hf\mtb_shared\wiced_btsdk\tools\btsdk-host-apps-bt-ble\release-v4.9.3\client_control\source`
+- Additional profile/reference project to compare multi-profile behavior:
+  - `C:\BT_Projects\mtb-example-btsdk-audio-watch-ama-master`

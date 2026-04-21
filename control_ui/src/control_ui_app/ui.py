@@ -668,10 +668,8 @@ class BridgeApp:
         elif event_code == 0x11 and text:
             normalized_clcc = self._normalize_clcc(text)
             self._apply_call_state_from_clcc(normalized_clcc)
-            # Forward CLCC during incoming-call recovery even if the car did not explicitly
-            # request it, because some head units rely on CLCC/CLIP to open call UI.
-            forward_incoming_recovery = self._is_phone_incoming_call_state() and not self._call_has_real_clip
-            if self._pending_car_clcc_requests > 0 or forward_incoming_recovery:
+            # Forward CLCC only when the car explicitly requested it.
+            if self._pending_car_clcc_requests > 0:
                 self._pending_car_clcc_requests = max(0, self._pending_car_clcc_requests - 1)
                 self._send_car_result(f"+CLCC: {normalized_clcc}", f"Phone HF +CLCC {text} -> Car AG +CLCC {normalized_clcc}")
                 clip_from_clcc = self._clip_from_clcc(normalized_clcc)
@@ -875,21 +873,11 @@ class BridgeApp:
                 self._last_phone_ring_at = now
                 self._send_car_result("RING", "Phone HF +CIEV 3,1 fallback -> Car AG RING")
             if not self._call_has_real_clip:
-                if (now - self._last_phone_clcc_probe_at) > 2.0:
-                    self._last_phone_clcc_probe_at = now
-                    self._pending_car_clcc_requests += 1
-                    send_state = self._send_or_queue_phone_hf_at(
-                        "AT+CLCC",
-                        "Phone HF +CIEV 3,1 fallback CLCC probe",
-                        allow_stale_handle=True,
-                    )
-                    self._bridge_trace(
-                        f"Phone HF +CIEV 3,1 fallback: requested CLCC probe ({send_state}) waiting for real caller ID"
-                    )
+                self._bridge_trace("Phone HF +CIEV 3,1 fallback: waiting for real caller ID (CLIP/CLCC)")
             if self._last_clip_number:
                 clip = f'+CLIP: "{self._last_clip_number}",{self._last_clip_type if self._last_clip_type.isdigit() else "129"}'
                 self._send_car_result(clip, f"Phone HF +CIEV 3,1 fallback -> Car AG {clip}")
-        ag_index = {1: 4, 2: 1, 3: 2, 4: 3, 5: 5, 6: 7, 7: 6}.get(phone_index)
+        ag_index = {1: 4, 2: 1, 3: 2, 4: 3, 5: 6, 6: 7, 7: 5}.get(phone_index)
         if ag_index is None:
             return (None, None)
         self._send_car_cind_update(f"Phone HF +CIEV {phone_index},{value}")
@@ -934,8 +922,8 @@ class BridgeApp:
                 self._phone_hf_cind[3],
                 self._phone_hf_cind[4],
                 self._phone_hf_cind[1],
-                self._phone_hf_cind[5],
                 self._phone_hf_cind[7],
+                self._phone_hf_cind[5],
                 self._phone_hf_cind[6],
             )
         )
