@@ -573,12 +573,11 @@ class BridgeApp:
             self._car_avrc_tg_connected = True
             self._car_avrc_tg_notifications_registered = False
             self._bridge_trace("Car AVRCP TG connected; ready to receive bridged metadata/status")
+            self.car_session.avrc_tg_register_notifications()
+            self._car_avrc_tg_notifications_registered = True
+            self._bridge_trace("Requested Car AVRCP TG notification registration")
             if not self._car_tg_push_enabled:
-                self._bridge_trace("Car AVRCP TG push is disabled for call-behavior testing")
-            else:
-                self.car_session.avrc_tg_register_notifications()
-                self._car_avrc_tg_notifications_registered = True
-                self._bridge_trace("Requested Car AVRCP TG notification registration")
+                self._bridge_trace("Car AVRCP TG metadata/status push is disabled for call-behavior testing")
             self._last_forwarded_track_signature = tuple()
             self._last_forwarded_status_signature = (-1, -1, -1)
             if not self._car_tg_push_enabled:
