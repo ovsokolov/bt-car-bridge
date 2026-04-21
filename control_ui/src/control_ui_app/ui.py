@@ -611,10 +611,6 @@ class BridgeApp:
         if opcode_value == opcode(GROUP_HF, 0x04):
             self._car_answer_pending = False
         if opcode_value == EVENT_HF_AUDIO_OPEN:
-            if self._phone_hf_cind[2] != "1":
-                # Some phones transition SCO audio before publishing a stable call=1 CIEV.
-                # Hint active-call state so car HFP UI/audio routing follows the answered call.
-                self._bridge_phone_active_call_hint("Phone HF audio open inferred active call")
             self._bridge_ag_audio("open")
             return
         if opcode_value == EVENT_HF_AUDIO_CLOSE:
@@ -858,6 +854,10 @@ class BridgeApp:
             self._call_has_real_clip = False
             self._last_clip_number = ""
             self._last_clip_type = "129"
+            self._ring_placeholder_clip_sent = False
+        elif phone_index == 3 and value == "0":
+            # Ensure each new incoming-call setup phase can emit a fallback placeholder
+            # if the phone delays or omits CLIP/CLCC.
             self._ring_placeholder_clip_sent = False
         if phone_index == 3 and value == "1":
             now = time.monotonic()
