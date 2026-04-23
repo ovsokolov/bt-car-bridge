@@ -11,6 +11,7 @@
 
 # Python caches and virtualenvs
 **/__pycache__/
+**/.pycache_tmp/
 **/.pytest_cache/
 **/.mypy_cache/
 **/.venv/
@@ -52,3 +53,10 @@
 **/*.pdf
 **/*.html
 mtb-example-btsdk-audio-watch/
+
+# Out-of-scope project trees for now
+mtb-example-btsdk-audio-watch-ama-master/
+mtb-example-psoc-edge-btstack-a2dp-sink-master/
+mtb-example-psoc-edge-btstack-a2dp-source-master/
+mtb-example-psoc-edge-btstack-hfp-ag-master/
+test/
