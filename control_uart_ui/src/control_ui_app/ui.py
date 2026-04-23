@@ -81,6 +81,8 @@ class BridgeApp:
         ttk.Button(top, text="Send Test HF->AG", command=lambda: self._open_inject_popup("HF->AG")).pack(side=tk.LEFT, padx=(12, 0))
         ttk.Button(top, text="Send Test AG->HF", command=lambda: self._open_inject_popup("AG->HF")).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(top, text="Run Auto Relay Test", command=self._run_auto_relay_test).pack(side=tk.LEFT, padx=(12, 0))
+        ttk.Button(top, text="Run Pass Scenario", command=self._run_pass_scenario).pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Button(top, text="Run Fail Scenario", command=self._run_fail_scenario).pack(side=tk.LEFT, padx=(8, 0))
         ttk.Button(top, text="Show Last Test Report", command=self._show_last_test_report).pack(side=tk.LEFT, padx=(8, 0))
 
         body = ttk.Panedwindow(self.root, orient=tk.HORIZONTAL)
@@ -401,6 +403,44 @@ class BridgeApp:
 
     def _show_last_test_report(self) -> None:
         messagebox.showinfo("Last Test Report", self._last_test_report)
+
+    def _run_pass_scenario(self) -> None:
+        self._run_auto_relay_test()
+
+    def _run_fail_scenario(self) -> None:
+        phone = self.phone_session.info
+        car = self.car_session.info
+        if not phone.is_open or not car.is_open:
+            messagebox.showwarning("Ports not open", "Open both Phone and Car ports before running the fail scenario.")
+            return
+
+        # Deterministic fail-path validation: force relay off for one injected frame.
+        original_relay_state = self._relay_enabled.get()
+        test_line = PREDEFINED_TEST_FRAMES[0][1]
+        target = self.car_session.info
+        before_tx = target.relay_tx_lines
+        before_err = target.relay_errors
+        self._relay_enabled.set(False)
+        sent = self._inject_frame("HF->AG", test_line)
+        self._relay_enabled.set(original_relay_state)
+        after_tx = target.relay_tx_lines
+        after_err = target.relay_errors
+
+        passed = (not sent) and (after_tx == before_tx) and (after_err == before_err)
+        status = "PASS" if passed else "FAIL"
+        report = (
+            f"Fail Scenario: {status}\n\n"
+            f"Expected behavior:\n"
+            f"- Relay disabled causes no TX forwarding\n"
+            f"- No write error is generated\n\n"
+            f"Observed:\n"
+            f"- sent={sent}\n"
+            f"- car tx delta={after_tx - before_tx}\n"
+            f"- car err delta={after_err - before_err}"
+        )
+        self._last_test_report = report
+        self._trace("TEST", f"Fail scenario {status.lower()}")
+        messagebox.showinfo("Fail Scenario Result", report)
 
 
 def run() -> None:

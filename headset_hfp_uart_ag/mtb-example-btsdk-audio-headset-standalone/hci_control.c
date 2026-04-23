@@ -374,6 +374,36 @@ static void hci_control_sleep_configure(void);
 /******************************************************
  *               Function Definitions
  ******************************************************/
+static void hci_control_enforce_fixed_roles(void)
+{
+#if defined(WICED_APP_HFP_AG_INCLUDED) && !defined(WICED_APP_HFP_HF_INCLUDED)
+    if (hfp_profile_role != HFP_AUDIO_GATEWAY_ROLE)
+    {
+        WICED_BT_TRACE("[ROLE_LOCK] forcing HFP role to AG\n");
+        hfp_profile_role = HFP_AUDIO_GATEWAY_ROLE;
+    }
+#elif defined(WICED_APP_HFP_HF_INCLUDED) && !defined(WICED_APP_HFP_AG_INCLUDED)
+    if (hfp_profile_role != HFP_HANDSFREE_UNIT_ROLE)
+    {
+        WICED_BT_TRACE("[ROLE_LOCK] forcing HFP role to HF\n");
+        hfp_profile_role = HFP_HANDSFREE_UNIT_ROLE;
+    }
+#endif
+
+#if defined(WICED_APP_AUDIO_RC_CT_INCLUDED) && !defined(WICED_APP_AUDIO_RC_TG_INCLUDED)
+    if (avrcp_profile_role != AVRCP_CONTROLLER_ROLE)
+    {
+        WICED_BT_TRACE("[ROLE_LOCK] forcing AVRCP role to CT\n");
+        avrcp_profile_role = AVRCP_CONTROLLER_ROLE;
+    }
+#elif defined(WICED_APP_AUDIO_RC_TG_INCLUDED) && !defined(WICED_APP_AUDIO_RC_CT_INCLUDED)
+    if (avrcp_profile_role != AVRCP_TARGET_ROLE)
+    {
+        WICED_BT_TRACE("[ROLE_LOCK] forcing AVRCP role to TG\n");
+        avrcp_profile_role = AVRCP_TARGET_ROLE;
+    }
+#endif
+}
 
 void hci_control_init(void)
 {
@@ -390,6 +420,8 @@ void hci_control_init(void)
 void hci_control_post_init(void)
 {
     hfpb1_role_t bridge_role = HFPB1_ROLE_UNKNOWN;
+
+    hci_control_enforce_fixed_roles();
 
 #if defined(WICED_APP_HFP_AG_INCLUDED) && !defined(WICED_APP_HFP_HF_INCLUDED)
     bridge_role = HFPB1_ROLE_AG;
@@ -455,17 +487,17 @@ void hci_control_post_init(void)
     if (p_key_info_pool == NULL)
         WICED_BT_TRACE("Err: wiced_bt_create_pool failed\n");
 
-    /* Keep the phone-facing HF board hidden by default so nearby cars do not
-     * attempt to pair with it unless the operator explicitly enables it. */
-    hci_control_cb.pairing_allowed = WICED_FALSE;
+    /* Keep BR/EDR bring-up independent of the host UI. The board should remain
+     * pairable/discoverable/connectable after boot even when no serial client is open. */
+    hci_control_cb.pairing_allowed = WICED_TRUE;
     wiced_bt_set_pairable_mode( hci_control_cb.pairing_allowed, 0 );
-    wiced_bt_dev_set_discoverability( BTM_NON_DISCOVERABLE,
+    wiced_bt_dev_set_discoverability( BTM_GENERAL_DISCOVERABLE,
                                       BTM_DEFAULT_DISC_WINDOW,
                                       BTM_DEFAULT_DISC_INTERVAL );
-    wiced_bt_dev_set_connectability( WICED_FALSE,
+    wiced_bt_dev_set_connectability( WICED_TRUE,
                                      BTM_DEFAULT_CONN_WINDOW,
                                      BTM_DEFAULT_CONN_INTERVAL );
-    WICED_BT_TRACE( "Startup BR/EDR visibility disabled until host enables pairing\n" );
+    WICED_BT_TRACE( "Startup BR/EDR visibility enabled without host UI\n" );
 
 #if (defined(SLEEP_SUPPORTED) && (SLEEP_SUPPORTED == WICED_TRUE))
     hci_control_sleep_configure();
@@ -1796,6 +1828,13 @@ int hci_control_alloc_nvram_id( void )
  */
 void hci_control_switch_avrcp_role(uint8_t new_role)
 {
+#if defined(WICED_APP_AUDIO_RC_CT_INCLUDED) && !defined(WICED_APP_AUDIO_RC_TG_INCLUDED)
+    WICED_BT_TRACE("[%s] AVRCP role switch blocked (CT-only build). Requested:%d\n", __FUNCTION__, new_role);
+    return;
+#elif defined(WICED_APP_AUDIO_RC_TG_INCLUDED) && !defined(WICED_APP_AUDIO_RC_CT_INCLUDED)
+    WICED_BT_TRACE("[%s] AVRCP role switch blocked (TG-only build). Requested:%d\n", __FUNCTION__, new_role);
+    return;
+#endif
 #if ( defined(WICED_APP_AUDIO_RC_TG_INCLUDED) && defined(WICED_APP_AUDIO_RC_CT_INCLUDED) )
     WICED_BT_TRACE ( "[%s] New Role: %d \n", __FUNCTION__, new_role);
 
@@ -1842,6 +1881,13 @@ void hci_control_transport_status( wiced_transport_type_t type )
 
 void hci_control_switch_hfp_role( uint8_t new_role )
 {
+#if defined(WICED_APP_HFP_HF_INCLUDED) && !defined(WICED_APP_HFP_AG_INCLUDED)
+    WICED_BT_TRACE("[%s] HFP role switch blocked (HF-only build). Requested:%d\n", __FUNCTION__, new_role);
+    return;
+#elif defined(WICED_APP_HFP_AG_INCLUDED) && !defined(WICED_APP_HFP_HF_INCLUDED)
+    WICED_BT_TRACE("[%s] HFP role switch blocked (AG-only build). Requested:%d\n", __FUNCTION__, new_role);
+    return;
+#endif
 #if (defined(WICED_APP_HFP_AG_INCLUDED) && defined(WICED_APP_HFP_HF_INCLUDED))
     WICED_BT_TRACE("[%s] Switch from %d to %d\n", __FUNCTION__, hfp_profile_role, new_role);
     /* switch to new role */
