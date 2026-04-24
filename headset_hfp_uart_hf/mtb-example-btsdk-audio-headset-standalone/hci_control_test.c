@@ -43,9 +43,6 @@
 #include "hci_control_test.h"
 #include "wiced_transport.h"
 #include "app.h"
-#include "hfpb1_transport.h"
-
-#include <string.h>
 
 /******************************************************************************
  *                          Constants
@@ -53,19 +50,12 @@
 #define VENDOR_SPECIFIC_OPCODE                  0x21ff
 #define CONNECTIONLESS_RX_TEST_OPCODE           0xFC52
 #define RX_TEST_STATISTICS_SUBCODE              0x07
-#define HCI_CONTROL_TEST_COMMAND_HFPB1_PARSE    ((HCI_CONTROL_GROUP_TEST << 8) | 0x10)
-#define HCI_CONTROL_TEST_EVENT_HFPB1_PARSE      ((HCI_CONTROL_GROUP_TEST << 8) | 0x10)
-
-#define HFPB1_PARSE_STATUS_OK                   0x00
-#define HFPB1_PARSE_STATUS_BAD_LENGTH           0x01
-#define HFPB1_PARSE_STATUS_BAD_FRAME            0x02
 
 /******************************************************************************
  *                          Function Declarations
  ******************************************************************************/
 static void hci_control_send_encapsulated_hci_event( uint8_t * p_data, uint16_t length );
 static void wiced_bt_send_test_command( uint16_t opcode, uint8_t* params, uint8_t params_length );
-static void hci_control_send_hfpb1_parse_result(uint8_t status, uint8_t ack_required, char pri);
 
 /******************************************************************************
  *                          Variable Definitions
@@ -77,53 +67,11 @@ hci_control_test_command_t test_command;
  ******************************************************************************/
 void hci_control_test_handle_command( uint16_t cmd_opcode, uint8_t* p_data, uint32_t data_len )
 {
-    hfpb1_frame_t parsed;
-
     switch( cmd_opcode )
     {
     case HCI_CONTROL_TEST_COMMAND_ENCAPSULATED_HCI_COMMAND:
         wiced_bt_send_test_command( ( p_data[1] | ( p_data[2] << 8 ) ), &p_data[4], p_data[3] );
         break;
-    case HCI_CONTROL_TEST_COMMAND_HFPB1_PARSE:
-    {
-        char line[HFPB1_MAX_FRAME_LEN + 1];
-        uint16_t line_len;
-        uint8_t valid;
-        uint8_t ack_required = 0;
-
-        if (data_len == 0 || data_len > HFPB1_MAX_FRAME_LEN)
-        {
-            hci_control_send_hfpb1_parse_result(HFPB1_PARSE_STATUS_BAD_LENGTH, 0, 'N');
-            break;
-        }
-
-        line_len = (uint16_t)data_len;
-        memcpy(line, p_data, line_len);
-        line[line_len] = '\0';
-        while (line_len > 0 && (line[line_len - 1] == '\r' || line[line_len - 1] == '\n'))
-        {
-            line[--line_len] = '\0';
-        }
-
-        memset(&parsed, 0, sizeof(parsed));
-        valid = hfpb1_parse_frame(line, line_len, &parsed);
-        if (!valid)
-        {
-            hci_control_send_hfpb1_parse_result(HFPB1_PARSE_STATUS_BAD_FRAME, 0, 'N');
-            WICED_BT_TRACE("[HFPB1][TEST] parse failed\n");
-            break;
-        }
-
-        ack_required = hfpb1_is_ack_required(&parsed);
-        hci_control_send_hfpb1_parse_result(HFPB1_PARSE_STATUS_OK, ack_required, parsed.pri);
-        WICED_BT_TRACE("[HFPB1][TEST] parse ok type=%s src=%s dst=%s pri=%c ack=%d\n",
-                       parsed.type,
-                       parsed.src,
-                       parsed.dst,
-                       parsed.pri,
-                       ack_required);
-        break;
-    }
 
     default:
         WICED_BT_TRACE( "unknown test command\n");
@@ -181,13 +129,4 @@ static void wiced_bt_send_test_command( uint16_t opcode, uint8_t* params, uint8_
 
     test_command.test_executing = WICED_TRUE;
     test_command.opcode         = opcode;
-}
-
-static void hci_control_send_hfpb1_parse_result(uint8_t status, uint8_t ack_required, char pri)
-{
-    uint8_t payload[3];
-    payload[0] = status;
-    payload[1] = ack_required;
-    payload[2] = (uint8_t)pri;
-    wiced_transport_send_data(HCI_CONTROL_TEST_EVENT_HFPB1_PARSE, payload, sizeof(payload));
 }

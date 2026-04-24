@@ -46,9 +46,6 @@ class SessionInfo:
     a2dp_retry_job_active: bool = False
     a2dp_retry_after_id: str = ""
     last_status: str = ""
-    relay_rx_lines: int = 0
-    relay_tx_lines: int = 0
-    relay_errors: int = 0
 
 
 @dataclass

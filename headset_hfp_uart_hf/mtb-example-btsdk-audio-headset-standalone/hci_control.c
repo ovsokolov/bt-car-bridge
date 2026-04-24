@@ -223,7 +223,6 @@
 #include "hci_control_rc_target.h"
 #include "hci_control_test.h"
 #include "hci_control_le.h"
-#include "hfpb1_transport.h"
 #ifdef WICED_APP_HFP_AG_INCLUDED
 #include "hci_control_hfp_ag.h"
 #include <wiced_bt_hfp_ag.h>
@@ -389,18 +388,6 @@ void hci_control_init(void)
 
 void hci_control_post_init(void)
 {
-    hfpb1_role_t bridge_role = HFPB1_ROLE_UNKNOWN;
-
-#if defined(WICED_APP_HFP_AG_INCLUDED) && !defined(WICED_APP_HFP_HF_INCLUDED)
-    bridge_role = HFPB1_ROLE_AG;
-#elif defined(WICED_APP_HFP_HF_INCLUDED) && !defined(WICED_APP_HFP_AG_INCLUDED)
-    bridge_role = HFPB1_ROLE_HF;
-#endif
-    hfpb1_transport_init(bridge_role, 0U);
-    WICED_BT_TRACE("[HFPB1] transport initialized role=%d sid=%s\n",
-                   bridge_role,
-                   hfpb1_transport_get_state()->sid);
-
 #ifdef WICED_APP_LE_INCLUDED
     hci_control_le_enable(&wiced_bt_cfg_settings);
     //wiced_bt_ble_config_privacy(WICED_FALSE);
