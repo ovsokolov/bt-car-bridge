@@ -314,20 +314,9 @@ void btheadset_control_init(void)
 #ifdef NO_PUART_SUPPORT
     wiced_set_debug_uart(WICED_ROUTE_DEBUG_TO_WICED_UART);
 #else // NO_PUART_SUPPORT
-#if defined(CYW20706A2)
-    wiced_set_debug_uart_baudrate(3000000);
-    wiced_set_debug_uart(WICED_ROUTE_DEBUG_TO_PUART);
-    wiced_hal_puart_select_uart_pads(WICED_PUART_RXD, WICED_PUART_TXD, 0, 0);
-#else
-    // Set to PUART to see traces on peripheral uart(puart)
-    wiced_hal_puart_init();
-    wiced_hal_puart_configuration(3000000, PARITY_NONE, STOP_BIT_2);
-#endif
-    wiced_set_debug_uart(WICED_ROUTE_DEBUG_TO_PUART);
+    /* Keep PUART free for bridge traffic; send formatted traces over the host debug path. */
+    wiced_set_debug_uart(WICED_ROUTE_DEBUG_TO_WICED_UART);
 #endif // NO_PUART_SUPPORT
-
-    // Set to HCI to see traces on HCI uart - default if no call to wiced_set_debug_uart()
-    // wiced_set_debug_uart( WICED_ROUTE_DEBUG_TO_HCI_UART );
 
     // Use WICED_ROUTE_DEBUG_TO_WICED_UART to send formatted debug strings over the WICED
     // HCI debug interface to be parsed by ClientControl/BtSpy.

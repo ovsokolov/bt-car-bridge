@@ -253,22 +253,8 @@ APPLICATION_START()
     wiced_set_debug_uart(WICED_ROUTE_DEBUG_TO_WICED_UART);
 #endif // CYW43012C0
 #else
-#ifdef CYW55572
-    // Default PUART baudrate is 115200, update it to 921600 before calling wiced_set_debug_uart(WICED_ROUTE_DEBUG_TO_PUART);
-    wiced_set_debug_uart_baudrate(921600);
-#else /* !CYW55572 */
-    wiced_hal_puart_init();
-#if ( defined(CYW20706A2) )
-    wiced_hal_puart_configuration( 921600, PARITY_NONE, STOP_BIT_2 );
-    wiced_hal_puart_select_uart_pads( WICED_PUART_RXD, WICED_PUART_TXD, 0, 0);
-#else
-#ifdef CYW43022C1
-    wiced_hal_puart_select_uart_pads( 0, WICED_P05, 0, 0 );
-#endif
-    wiced_hal_puart_configuration( 921600, PARITY_NONE, STOP_BIT_2 );
-#endif // CYW20706A2
-#endif /* CYW55572 */
-    wiced_set_debug_uart( WICED_ROUTE_DEBUG_TO_PUART );
+    /* Reserve PUART for the inter-board bridge; keep formatted debug on the host path. */
+    wiced_set_debug_uart( WICED_ROUTE_DEBUG_TO_WICED_UART );
 #endif // NO_PUART_SUPPORT
 #endif // WICED_BT_TRACE_ENABLE
 

@@ -1058,7 +1058,7 @@ void hci_control_handle_trace_enable( uint8_t *p_data )
         wiced_bt_dev_register_hci_trace( NULL);
     }
 #if (defined(SLEEP_SUPPORTED) && (SLEEP_SUPPORTED == WICED_TRUE))
-    route_debug = WICED_ROUTE_DEBUG_TO_PUART;
+    route_debug = WICED_ROUTE_DEBUG_TO_WICED_UART;
 #endif
 
 // In SPI transport case, PUART is recommended for debug traces and is set to PUART by default.

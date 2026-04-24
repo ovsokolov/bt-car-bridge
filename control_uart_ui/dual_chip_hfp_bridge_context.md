@@ -391,6 +391,8 @@ Phase 0 is complete when:
 
 Goals:
 
+- reserve `PUART` for bridge traffic only
+- keep debug/trace on the host-side HCI/WICED debug path
 - add `bridge_protocol.*`
 - add `bridge_puart.*`
 - initialize PUART cleanly on both boards
@@ -399,9 +401,20 @@ Goals:
 
 Success criteria:
 
+- no firmware debug text appears on the PUART bridge pins
 - boards exchange hello messages reliably after boot
 - malformed line does not crash parser
 - logs clearly show tx/rx bridge lines
+
+Recommended steps:
+
+1. Phase 1.1: remove PUART debug routing and reserve PUART for the bridge
+2. Phase 1.2: add `bridge_protocol.*` and `bridge_puart.*` skeleton on both boards
+3. Phase 1.3: implement and verify `BR1,HELLO,<role>` exchange
+
+Current status:
+
+- Phase 1.1 completed: both UART firmware repos now keep debug on the host-side path instead of forcing `PUART`
 
 ### Phase 2: Inbound Call Path
 
@@ -590,6 +603,37 @@ Useful early ideas:
 - keep protocol human-readable until real throughput or robustness data says otherwise
 - keep HFP and AVRCP as separate bridge domains sharing one framing layer
 - include a profile field in future framing if message volume grows, for example `BR1,HFP,...` and `BR1,AVRCP,...`
+
+## Commit Naming Convention
+
+Use phase-numbered commit messages so the project history stays easy to follow.
+
+Recommended format:
+
+`Phase X.Y: short action description`
+
+Examples:
+
+- `Phase 0.1: restore baseline HCI UI communication`
+- `Phase 0.2: verify HF and AG identity over HCI`
+- `Phase 1.1: add PUART bridge transport skeleton`
+- `Phase 1.2: implement HF and AG hello exchange`
+- `Phase 2.1: forward incoming call event from HF to AG`
+- `Phase 3.1: send answer and hangup commands from AG to HF`
+
+Guidelines:
+
+- one logical result per commit
+- include the phase and sub-step when possible
+- keep the title short and action-oriented
+- if a phase has multiple implementation steps, use `X.Y`
+- if useful, add validation notes in the commit body
+
+Preferred commit body structure when needed:
+
+- what changed
+- why it changed
+- how it was validated
 
 ## Local References
 
