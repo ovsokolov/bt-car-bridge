@@ -19,7 +19,7 @@ GROUP_MISC = 0xFF
 GROUP_NAMES = {
     GROUP_DEVICE: "Device",
     GROUP_HF: "Hands-Free",
-    GROUP_AUDIO: "A2DP Source",
+    GROUP_AUDIO: "A2DP Audio",
     GROUP_AVRC_TARGET: "AVRCP Target",
     GROUP_AG: "Audio Gateway",
     GROUP_AVRC_CONTROLLER: "AVRCP Controller",
@@ -42,6 +42,7 @@ COMMAND_UNBOND_DEVICE = opcode(GROUP_DEVICE, 0x13)
 COMMAND_PIN_REPLY = opcode(GROUP_DEVICE, 0x15)
 COMMAND_READ_LOCAL_BDA = opcode(GROUP_DEVICE, 0x0F)
 COMMAND_GET_VERSION = opcode(GROUP_MISC, 0x02)
+COMMAND_BRIDGE_HELLO_CONTROL = opcode(GROUP_MISC, 0x20)
 
 COMMAND_HF_CONNECT = opcode(GROUP_HF, 0x01)
 COMMAND_HF_DISCONNECT = opcode(GROUP_HF, 0x02)
@@ -109,12 +110,16 @@ EVENT_CONNECTION_STATUS = opcode(GROUP_DEVICE, 0x11)
 
 EVENT_MISC_VERSION = opcode(GROUP_MISC, 0x02)
 EVENT_MISC_BRIDGE_IDENTITY = opcode(GROUP_MISC, 0x03)
+EVENT_MISC_HF_STARTUP_STAGE = opcode(GROUP_MISC, 0x22)
+EVENT_MISC_HF_AUDIO_INIT_DIAG = opcode(GROUP_MISC, 0x23)
+EVENT_MISC_PROFILE_SUMMARY = opcode(GROUP_MISC, 0x24)
+EVENT_MISC_BRIDGE_LINE = opcode(GROUP_MISC, 0x25)
 
 
 SUPPORTED_GROUP_NAMES = {
     GROUP_HF: "HF",
     GROUP_AG: "AG",
-    GROUP_AUDIO: "A2DP Source",
+    GROUP_AUDIO: "A2DP Audio",
     GROUP_AVRC_CONTROLLER: "AVRCP Controller",
     GROUP_AVRC_TARGET: "AVRCP Target",
     GROUP_AUDIO_SINK: "A2DP Sink",
@@ -181,6 +186,7 @@ TX_OPCODE_NAMES = {
     COMMAND_PIN_REPLY: "PIN Reply",
     COMMAND_READ_LOCAL_BDA: "Read Local BDA",
     COMMAND_GET_VERSION: "Get Version",
+    COMMAND_BRIDGE_HELLO_CONTROL: "Bridge Hello Control",
     COMMAND_HF_CONNECT: "HF Connect",
     COMMAND_HF_DISCONNECT: "HF Disconnect",
     COMMAND_HF_OPEN_AUDIO: "HF Audio Open",
@@ -223,6 +229,10 @@ RX_OPCODE_NAMES = {
     EVENT_READ_LOCAL_BDA: "Read Local BDA",
     EVENT_MISC_VERSION: "Version",
     EVENT_MISC_BRIDGE_IDENTITY: "Bridge Identity",
+    EVENT_MISC_HF_STARTUP_STAGE: "HF Startup Stage",
+    EVENT_MISC_HF_AUDIO_INIT_DIAG: "Audio Init Diag",
+    EVENT_MISC_PROFILE_SUMMARY: "Profile Summary",
+    EVENT_MISC_BRIDGE_LINE: "Bridge Line",
     EVENT_COMMAND_STATUS: "Command Status",
     EVENT_CONNECTION_STATUS: "Connection Status",
     opcode(GROUP_HF, 0x03): "HF Service Connected",
@@ -425,7 +435,7 @@ def _decode_addr_status_handle(payload: bytes) -> tuple[str | None, int | None, 
 
 def _group_name_with_code(group: int) -> str:
     if group == GROUP_AUDIO:
-        return "A2DP Audio / Source group (0x05)"
+        return "A2DP Audio (0x05)"
     return f"{SUPPORTED_GROUP_NAMES.get(group, f'Group {group}')} (0x{group:02X})"
 
 
@@ -539,6 +549,33 @@ def decode_rx_message(opcode_value: int, payload: bytes) -> str:
     if opcode_value == EVENT_MISC_BRIDGE_IDENTITY:
         identity = payload.decode("utf-8", errors="ignore").strip("\x00")
         return f"Board identity is {identity}"
+    if opcode_value == EVENT_MISC_HF_STARTUP_STAGE and payload:
+        return f"HF startup stage marker: S{payload[0]}"
+    if opcode_value == EVENT_MISC_HF_AUDIO_INIT_DIAG and len(payload) >= 23:
+        role = payload[0]
+        result = payload[1]
+        free_before = payload[2] | (payload[3] << 8) | (payload[4] << 16) | (payload[5] << 24)
+        free_after = payload[6] | (payload[7] << 8) | (payload[8] << 16) | (payload[9] << 24)
+        heap_size = payload[10] | (payload[11] << 8) | (payload[12] << 16) | (payload[13] << 24)
+        tx_size = payload[14] | (payload[15] << 8) | (payload[16] << 16) | (payload[17] << 24)
+        codec_size = payload[18] | (payload[19] << 8) | (payload[20] << 16) | (payload[21] << 24)
+        stage = payload[22]
+        return (
+            "Audio init diag: "
+            f"stage=S{stage}, result=0x{result:02X}, role=0x{role:02X}, "
+            f"heap={heap_size}, free_before={free_before}, free_after={free_after}, "
+            f"tx_buf={tx_size}, codec_buf=0x{codec_size:X}"
+        )
+    if opcode_value == EVENT_MISC_PROFILE_SUMMARY:
+        summary = payload.decode("utf-8", errors="ignore").strip("\x00")
+        return f"Profile summary: {summary}"
+    if opcode_value == EVENT_MISC_BRIDGE_LINE:
+        line = payload.decode("utf-8", errors="ignore").strip("\x00")
+        if line.startswith("RX:"):
+            return f"[RECEIVED over PUART] {line[3:]}"
+        if line.startswith("TX:"):
+            return f"[SENT over PUART] {line[3:]}"
+        return f"[PUART bridge] {line}"
     if opcode_value == EVENT_READ_LOCAL_BDA and len(payload) >= 6:
         return f"Local Bluetooth address: {bd_addr_to_display(payload[:6])}"
     if opcode_value == opcode(GROUP_DEVICE, 0x04):

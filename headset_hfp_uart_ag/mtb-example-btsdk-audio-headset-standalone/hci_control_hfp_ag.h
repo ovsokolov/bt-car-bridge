@@ -47,14 +47,10 @@
 
 /* AG Supported Feature */
 #if (BTM_WBS_INCLUDED == TRUE )
-#define AG_SUPPORTED_FEATURES_ATT          ( WICED_BT_HFP_AG_SDP_FEATURE_3WAY_CALLING | \
-                                             WICED_BT_HFP_AG_SDP_FEATURE_VRECG | \
-                                             WICED_BT_HFP_AG_SDP_FEATURE_INBAND | \
+#define AG_SUPPORTED_FEATURES_ATT          ( WICED_BT_HFP_AG_SDP_FEATURE_VRECG | \
                                              WICED_BT_HFP_AG_SDP_FEATURE_WIDEBAND_SPEECH )
 #else
-#define AG_SUPPORTED_FEATURES_ATT          ( WICED_BT_HFP_AG_SDP_FEATURE_3WAY_CALLING | \
-                                             WICED_BT_HFP_AG_SDP_FEATURE_VRECG | \
-                                             WICED_BT_HFP_AG_SDP_FEATURE_INBAND )
+#define AG_SUPPORTED_FEATURES_ATT          ( WICED_BT_HFP_AG_SDP_FEATURE_VRECG )
 
 #endif
 

@@ -37,28 +37,24 @@
  *
  */
 
-#pragma once
+#ifndef _WICED_APP_CFG_H_
+#define _WICED_APP_CFG_H_
 
-#include <wiced_bt_cfg.h>
-#include <wiced_bt_audio.h>
 
-#ifdef WICED_APP_HFP_AG_INCLUDED
-#define HFP_AG_RFCOMM_CONN_NUM    2
-#else
-#define HFP_AG_RFCOMM_CONN_NUM    0
-#endif
+#include "wiced_bt_cfg.h"
+#include "wiced_bt_audio.h"
 
-#ifdef WICED_APP_HFP_HF_INCLUDED
-#define HFP_HF_RFCOMM_CONN_NUM    1
-#else
-#define HFP_HF_RFCOMM_CONN_NUM    0
-#endif
-
-#define WICED_BT_RFCOMM_MAX_CONN    (HFP_AG_RFCOMM_CONN_NUM + HFP_HF_RFCOMM_CONN_NUM)
+enum
+{
+    OFU_SPP_RFCOMM_SCN = 2,
+};
 
 extern const wiced_bt_cfg_settings_t wiced_bt_cfg_settings;
+#ifndef BTSTACK_VER
+extern const wiced_bt_cfg_buf_pool_t wiced_app_cfg_buf_pools[];
+#endif
 extern const wiced_bt_audio_config_buffer_t wiced_bt_audio_buf_config;
 extern int wiced_app_cfg_get_num_buf_pools(void);
-extern const uint8_t wiced_app_cfg_sdp_record[];
-extern uint16_t wiced_app_cfg_sdp_record_get_size(void);
-extern uint8_t wiced_app_cfg_avrc_ct_supported_events[];
+uint16_t wiced_app_cfg_sdp_record_get_size(void);
+
+#endif /* _WICED_APP_CFG_H_ */

@@ -46,20 +46,18 @@
 #include "wiced_app.h"
 #include "wiced_app_cfg.h"
 #include "app.h"
-#include "wiced_hal_nvram.h"
 #include "hci_control_api.h"
 #include "hci_control_le.h"
 #include "hci_control_rc_controller.h"
 
+/******************************************************
+ *               defines
+ ******************************************************/
 #if defined(WICED_HCI_BAUDRATE)
 #define APP_TRANSPORT_HCI_BAUD WICED_HCI_BAUDRATE
 #else
 #define APP_TRANSPORT_HCI_BAUD HCI_UART_DEFAULT_BAUD
 #endif
-
-/******************************************************
- *               defines
- ******************************************************/
 
 /******************************************************
  *               extern variables
@@ -95,7 +93,7 @@ const wiced_transport_cfg_t transport_cfg =
         .uart_cfg =
         {
             .mode = WICED_TRANSPORT_UART_HCI_MODE,
-            .baud_rate = APP_TRANSPORT_HCI_BAUD
+            .baud_rate =  APP_TRANSPORT_HCI_BAUD
         },
     },
 #ifdef NEW_DYNAMIC_MEMORY_INCLUDED
@@ -179,7 +177,6 @@ int app_write_nvram( int nvram_id, int data_len, void *p_data, wiced_bool_t from
     uint8_t                   *p = tx_buf;
     hci_control_nvram_chunk_t *p1;
     wiced_result_t            result;
-    wiced_result_t            nvram_status;
 
     wiced_bt_device_link_keys_t data;
     wiced_bt_device_link_keys_t_20721 * p_data_from_host;
@@ -224,12 +221,6 @@ int app_write_nvram( int nvram_id, int data_len, void *p_data, wiced_bool_t from
     memcpy( p1->data, p_data, data_len );
 
     p_nvram_first = p1;
-
-    if ( ( nvram_id >= WICED_NVRAM_VSID_START ) && ( nvram_id <= WICED_NVRAM_VSID_END ) )
-    {
-        uint8_t bytes_written = wiced_hal_write_nvram( ( uint8_t )nvram_id, ( uint8_t )data_len, ( uint8_t * )p_data, &nvram_status );
-        WICED_BT_TRACE( "Persisted NVRAM id:%d bytes:%d status:%d\n", nvram_id, bytes_written, nvram_status );
-    }
 
     wiced_bt_device_link_keys_t * p_keys = ( wiced_bt_device_link_keys_t *) p_data;
 

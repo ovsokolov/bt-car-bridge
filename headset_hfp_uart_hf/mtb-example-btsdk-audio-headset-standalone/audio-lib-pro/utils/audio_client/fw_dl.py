@@ -61,9 +61,9 @@ def fw_download(port, hcd_path):
     try:
         control.bthci_write(hci.BthciCmdCBB.RESET)
     except queue.Empty:
-        # if no response, try to update baud rate to 921600
+        # if no response, try to update baud rate to 3M
         control.close()
-        baud_rate = 921600
+        baud_rate = 3000000
         control = hci.Controller(com_port, baud_rate)
         control.bthci_write(hci.BthciCmdCBB.RESET)
     except:
@@ -71,10 +71,10 @@ def fw_download(port, hcd_path):
         control.close()
         return False, None
 
-    # Change baud rate to 921600 bps
+    # Change buad rate to 3000000 bps
     try:
-        if (baud_rate != 921600):
-            control.update_baud_rate(921600)
+        if (baud_rate != 3000000):
+            control.update_baud_rate(3000000)
             control.bthci_write(hci.BthciCmdCBB.RESET)
     except:
         logger.error("Cannot open port {}".format(com_port))

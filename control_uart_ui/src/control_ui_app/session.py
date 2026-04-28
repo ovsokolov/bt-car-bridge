@@ -29,6 +29,7 @@ from .hci import (
     COMMAND_AVRC_TG_REGISTER_NOTIFICATION,
     COMMAND_AVRC_TG_TRACK_INFO,
     COMMAND_BOND,
+    COMMAND_BRIDGE_HELLO_CONTROL,
     COMMAND_GET_VERSION,
     COMMAND_HF_CLOSE_AUDIO,
     COMMAND_HF_CONNECT,
@@ -68,7 +69,7 @@ from .hci import (
     parse_version_payload,
     try_extract_packet,
 )
-from .models import RemoteDevice, SessionInfo
+from .models import RemoteDevice, SessionInfo, TraceSessionInfo
 
 try:
     import serial
@@ -270,6 +271,9 @@ class SerialBridgeSession:
 
     def request_local_bda(self) -> None:
         self.send(COMMAND_READ_LOCAL_BDA)
+
+    def set_bridge_hello(self, enabled: bool) -> None:
+        self.send(COMMAND_BRIDGE_HELLO_CONTROL, bytes([1 if enabled else 0]))
 
     def start_inquiry(self) -> None:
         self.send(COMMAND_INQUIRY, b"\x01")
@@ -784,6 +788,153 @@ class SerialBridgeSession:
         self.info.preferred_remote_address = address
         device = self.info.discovered_devices.get(address)
         self.info.preferred_remote_name = device.name if device else self.info.preferred_remote_name
+
+    def _emit(self, kind: str, **payload: object) -> None:
+        self._event_sink(kind, payload)
+
+    def _log(self, message: str) -> None:
+        self._emit("log", message=message)
+
+
+class RawTraceSession:
+    def __init__(self, info: TraceSessionInfo, event_sink: EventSink) -> None:
+        self.info = info
+        self._event_sink = event_sink
+        self._serial: Optional[serial.Serial] = None if serial else None
+        self._reader_thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._line_buffer = bytearray()
+
+    def open(self, port: str, baud_rate: Optional[int] = None) -> bool:
+        if serial is None:
+            self._log(f"pyserial is not available: {SERIAL_IMPORT_ERROR}")
+            return False
+        if self.info.is_open:
+            self.close()
+        self.info.port = port.strip()
+        if baud_rate is not None:
+            self.info.baud_rate = int(baud_rate)
+        self._stop_event.clear()
+        self._line_buffer.clear()
+        try:
+            self._serial = serial.Serial(self.info.port, self.info.baud_rate, timeout=0.2)
+            self._serial.reset_input_buffer()
+            self._serial.reset_output_buffer()
+        except Exception as exc:
+            self._serial = None
+            self.info.is_open = False
+            self.info.last_status = f"Open failed: {exc}"
+            self._emit("state", status=self.info.last_status)
+            self._log(self.info.last_status)
+            return False
+        self.info.is_open = True
+        self.info.last_status = f"Opened {self.info.port} @ {self.info.baud_rate}"
+        self._reader_thread = threading.Thread(target=self._reader_loop, name=f"trace-{self.info.label}", daemon=True)
+        self._reader_thread.start()
+        self._emit("state", status=self.info.last_status)
+        self._log(f"Opened raw trace on {self.info.port} @ {self.info.baud_rate}")
+        return True
+
+    def close(self) -> None:
+        self._stop_event.set()
+        serial_port = self._serial
+        self._serial = None
+        if serial_port is not None:
+            try:
+                if hasattr(serial_port, "cancel_read"):
+                    serial_port.cancel_read()
+            except Exception:
+                pass
+            try:
+                serial_port.close()
+            except Exception:
+                pass
+        reader_thread = self._reader_thread
+        if reader_thread is not None and reader_thread.is_alive() and reader_thread is not threading.current_thread():
+            reader_thread.join(timeout=1.0)
+        self._reader_thread = None
+        was_open = self.info.is_open
+        self.info.is_open = False
+        self.info.last_status = "Closed"
+        self._emit("state", status=self.info.last_status)
+        if was_open:
+            self._log("Closed raw trace session")
+
+    def send_line(self, text: str) -> bool:
+        line = text.strip()
+        if not line:
+            self._log("Cannot send an empty PUART line")
+            return False
+        if not self.info.is_open or self._serial is None:
+            self._log("Cannot send PUART line while trace port is closed")
+            return False
+        payload = line.encode("ascii", errors="replace") + b"\r\n"
+        try:
+            with self._lock:
+                self._serial.write(payload)
+                self._serial.flush()
+        except Exception as exc:
+            self.info.last_status = f"Write failed: {exc}"
+            self._emit("state", status=self.info.last_status)
+            self._log(self.info.last_status)
+            return False
+        self._log(f"TX {line}")
+        return True
+
+    def _reader_loop(self) -> None:
+        while not self._stop_event.is_set():
+            serial_port = self._serial
+            if serial_port is None:
+                break
+            try:
+                chunk = serial_port.read(256)
+            except Exception as exc:
+                if self._stop_event.is_set():
+                    break
+                self.info.last_status = f"Read failed: {exc}"
+                self._emit("state", status=self.info.last_status)
+                self._log(self.info.last_status)
+                break
+            if not chunk:
+                continue
+            self._consume_chunk(chunk)
+        if not self._stop_event.is_set():
+            self.close()
+
+    def _consume_chunk(self, chunk: bytes) -> None:
+        with self._lock:
+            self._line_buffer.extend(chunk)
+            while True:
+                newline_index = self._find_newline(self._line_buffer)
+                if newline_index < 0:
+                    if len(self._line_buffer) >= 256:
+                        pending = bytes(self._line_buffer)
+                        self._line_buffer.clear()
+                        self._emit_raw_chunk(pending)
+                    break
+                line = bytes(self._line_buffer[:newline_index])
+                del self._line_buffer[: newline_index + 1]
+                if line.endswith(b"\r"):
+                    line = line[:-1]
+                if line:
+                    self._emit_line(line)
+
+    @staticmethod
+    def _find_newline(buffer: bytearray) -> int:
+        for marker in (b"\n", b"\r"):
+            index = buffer.find(marker)
+            if index >= 0:
+                return index
+        return -1
+
+    def _emit_line(self, line: bytes) -> None:
+        text = line.decode("utf-8", errors="replace")
+        self._emit("trace_line", text=text, raw=line)
+
+    def _emit_raw_chunk(self, chunk: bytes) -> None:
+        text = " ".join(f"{value:02X}" for value in chunk)
+        self._emit("trace_raw", text=text, raw=chunk)
 
     def _emit(self, kind: str, **payload: object) -> None:
         self._event_sink(kind, payload)

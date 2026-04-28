@@ -178,7 +178,6 @@ void hci_control_send_device_error_evt(uint8_t fw_error_code, uint8_t app_error_
 void hci_control_send_command_status_evt(uint16_t code, uint8_t status);
 void hci_control_send_pairing_completed_evt(uint8_t status, wiced_bt_device_address_t bdaddr);
 void hci_control_send_user_confirmation_request_evt(BD_ADDR bda, uint32_t numeric_value);
-void hci_control_send_pin_request_evt(BD_ADDR bda);
 void hci_control_send_encryption_changed_evt(uint8_t encrypted, wiced_bt_device_address_t bdaddr);
 
 /* LE control interface */

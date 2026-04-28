@@ -49,6 +49,15 @@ class SessionInfo:
 
 
 @dataclass
+class TraceSessionInfo:
+    label: str
+    port: str = ""
+    baud_rate: int = 921600
+    is_open: bool = False
+    last_status: str = ""
+
+
+@dataclass
 class BridgeState:
     phone_session: SessionInfo = field(default_factory=lambda: SessionInfo(label="PhoneConnect"))
     car_session: SessionInfo = field(default_factory=lambda: SessionInfo(label="CarConnect"))

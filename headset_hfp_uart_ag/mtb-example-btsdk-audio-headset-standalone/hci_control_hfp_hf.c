@@ -46,7 +46,6 @@
 #include "wiced_transport.h"
 #include "wiced_memory.h"
 #include "hci_control.h"
-#include <stdio.h>
 #if defined(CYW20721B2) || defined(CYW43012C0)
 #define HFP_VOLUME_HIGH 15
 #include "wiced_audio_manager.h"
@@ -59,7 +58,6 @@
  ******************************************************/
 bluetooth_hfp_context_t handsfree_ctxt_data;
 hci_control_hfp_hf_app_cb handsfree_app_states;
-static void hci_control_send_hf_event(uint16_t evt, uint16_t handle, hci_control_hfp_hf_event_t *p_data);
 
 wiced_bt_sco_params_t handsfree_esco_params =
 {
@@ -105,19 +103,6 @@ static void hfp_timer_expiry_handler( uint32_t param )
         wiced_bt_sco_remove( handsfree_ctxt_data.sco_index );
         wiced_bt_sco_create_as_initiator( handsfree_ctxt_data.peer_bd_addr, &handsfree_ctxt_data.sco_index, (wiced_bt_sco_params_t *) &handsfree_esco_params );
     }
-}
-
-static void hci_control_send_hf_unat(uint16_t handle, const char *line)
-{
-    hci_control_hfp_hf_event_t unat_evt;
-    memset(&unat_evt, 0, sizeof(unat_evt));
-    if ((line == NULL) || (*line == '\0'))
-    {
-        return;
-    }
-    strncpy(unat_evt.val.str, line, sizeof(unat_evt.val.str) - 1);
-    unat_evt.val.str[sizeof(unat_evt.val.str) - 1] = '\0';
-    hci_control_send_hf_event(HCI_CONTROL_HF_AT_EVENT_BASE + HCI_CONTROL_HF_AT_EVENT_UNAT, handle, &unat_evt);
 }
 
 static void handsfree_init_context_data(void)
@@ -237,20 +222,16 @@ static void handsfree_connection_event_handler(wiced_bt_hfp_hf_event_data_t* p_d
 static void handsfree_send_ciev_cmd (uint16_t handle, uint8_t ind_id,uint8_t ind_val, hci_control_hfp_hf_value_t *p_val)
 {
     wiced_bt_hfp_hf_scb_t    *p_scb = wiced_bt_hfp_hf_get_scb_by_handle(handle);
-    char unat_line[48];
     p_val->str[0] = '0'+ind_id;
     p_val->str[1] = ',';
     p_val->str[2] = '0'+ind_val;
     p_val->str[3] = '\0';
     hci_control_send_hf_event( HCI_CONTROL_HF_AT_EVENT_BASE + HCI_CONTROL_HF_AT_EVENT_CIEV, p_scb->rfcomm_handle, (hci_control_hfp_hf_event_t *)p_val );
-    snprintf(unat_line, sizeof(unat_line), "+CIEV: %s", p_val->str);
-    hci_control_send_hf_unat(p_scb->rfcomm_handle, unat_line);
 }
 
 static void handsfree_send_clcc_evt (uint16_t handle, wiced_bt_hfp_hf_active_call_t *active_call, hci_control_hfp_hf_value_t *p_val)
 {
     wiced_bt_hfp_hf_scb_t    *p_scb = wiced_bt_hfp_hf_get_scb_by_handle(handle);
-    char unat_line[WICED_BT_HFP_HF_MAX_AT_CMD_LEN + 32];
     int i = 0;
 
     p_val->str[i++] = '0'+active_call->idx;
@@ -273,8 +254,6 @@ static void handsfree_send_clcc_evt (uint16_t handle, wiced_bt_hfp_hf_active_cal
     }
     p_val->str[i++] = '\0';
     hci_control_send_hf_event( HCI_CONTROL_HF_AT_EVENT_BASE + HCI_CONTROL_HF_AT_EVENT_CLCC, p_scb->rfcomm_handle, (hci_control_hfp_hf_event_t *)p_val );
-    snprintf(unat_line, sizeof(unat_line), "+CLCC: %s", p_val->str);
-    hci_control_send_hf_unat(p_scb->rfcomm_handle, unat_line);
 }
 
 static void handsfree_call_setup_event_handler(wiced_bt_hfp_hf_call_data_t* call_data)
@@ -327,7 +306,6 @@ static void handsfree_call_setup_event_handler(wiced_bt_hfp_hf_call_data_t* call
 static void handsfree_event_callback( wiced_bt_hfp_hf_event_t event, wiced_bt_hfp_hf_event_data_t* p_data)
 {
     hci_control_hfp_hf_event_t     p_val;
-    char                            unat_line[WICED_BT_HFP_HF_MAX_AT_CMD_LEN + 48];
     int res = 0;
 
     memset(&p_val,0,sizeof(hci_control_hfp_hf_event_t));
@@ -511,48 +489,7 @@ static void handsfree_event_callback( wiced_bt_hfp_hf_event_t event, wiced_bt_hf
     if ( res && (res <= (HCI_CONTROL_HF_AT_EVENT_BASE + HCI_CONTROL_HF_AT_EVENT_MAX)) )
     {
         wiced_bt_hfp_hf_scb_t    *p_scb = wiced_bt_hfp_hf_get_scb_by_handle(p_data->handle);
-        unat_line[0] = '\0';
         hci_control_send_hf_event( res, p_scb->rfcomm_handle, (hci_control_hfp_hf_event_t *)&p_val );
-        switch (res - HCI_CONTROL_HF_AT_EVENT_BASE)
-        {
-            case HCI_CONTROL_HF_AT_EVENT_OK:
-                strncpy(unat_line, "OK", sizeof(unat_line) - 1);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_ERROR:
-                strncpy(unat_line, "ERROR", sizeof(unat_line) - 1);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_CMEE:
-                snprintf(unat_line, sizeof(unat_line), "+CME ERROR: %u", p_val.val.num);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_RING:
-                strncpy(unat_line, "RING", sizeof(unat_line) - 1);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_VGS:
-                snprintf(unat_line, sizeof(unat_line), "+VGS: %u", p_val.val.num);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_VGM:
-                snprintf(unat_line, sizeof(unat_line), "+VGM: %u", p_val.val.num);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_CLIP:
-                snprintf(unat_line, sizeof(unat_line), "+CLIP: %s,%u", p_val.val.str, p_val.val.num);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_BINP:
-                snprintf(unat_line, sizeof(unat_line), "+BINP: %s", p_val.val.str);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_CNUM:
-                snprintf(unat_line, sizeof(unat_line), "+CNUM: %s", p_val.val.str);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_BIND:
-                snprintf(unat_line, sizeof(unat_line), "+BIND: %s", p_val.val.str);
-                break;
-            case HCI_CONTROL_HF_AT_EVENT_BCS:
-                snprintf(unat_line, sizeof(unat_line), "+BCS: %u", p_val.val.num);
-                break;
-            default:
-                break;
-        }
-        unat_line[sizeof(unat_line) - 1] = '\0';
-        hci_control_send_hf_unat(p_scb->rfcomm_handle, unat_line);
     }
 }
 

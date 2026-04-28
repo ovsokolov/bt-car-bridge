@@ -1,227 +1,47 @@
-# Headset HFP HF app
+# Headset Standalone app
 
 ## Overview
-This project now hosts the watch example's full ClientControl-oriented HCI feature set inside the `Headset_Standalone` application for `CYBT-343026-EVAL`. In this workspace, the default build is configured for the HFP Hands-free Unit (HF) role so the board behaves as a headset connecting to a remote Audio Gateway such as a mobile phone. It demonstrates Bluetooth&#174; A2DP source, AVRCP Controller/Target, Apple Media Service (AMS), Apple Notification Center Service (ANCS), Personal Access Network (PAN), and HFP Hands-free Unit support, with the Audio Gateway role left available only as an optional build-time override.
-
-Features demonstrated:
-
- - AIROC&#8482; A2DP Source APIs
- - AIROC&#8482; AVRCP (Controller/Target) APIs
- - AIROC&#8482; GATT APIs
- - Apple Media Service and Apple Notification Center Services (AMS and ANCS)
- - Handling of the UART/SPI AIROC&#8482; protocol
- - SDP and GATT descriptor/attribute configuration
- - AIROC&#8482; SCO/RFCOMM initiator APIs and HFP Hands-free Unit role
+This app demonstrates the use of a Bluetooth&#174; Headset via the Bluetooth&#174; audio libraries.
 
 ## Instructions
 To demonstrate the app, follow these steps:
 
-1. Build and download the application to the AIROC&#8482; board. The default target in this workspace is `CYBT-343026-EVAL`, and the default HFP role is HF (`HFP_HF_INCLUDED=1`, `HFP_AG_INCLUDED=0`).
-2. Open the ClientControl application
-     - [UART] Open the "WICED HCI" port for the device. (Default baud rate configured in the application is defined by the BSP HCI\_UART\_DEAULT\_BAUD #define, usually either 3M or 115200 depending on the board UART capabilities.)
-     - [SPI] Open the "WICED PUART" port for the SPI master device (using 115200 baud rate and without flow control). Refer to the instructions below for SPI setup (supported on 20719B2 only)
-3. Use the ClientControl application to send various commands as mentioned below.
-4. Run the BTSpy program to view protocol and application traces.
+1. Build the application.
+2. Use HCI commands to download the application to the AIROC&#8482; board. The python sample code can be found in the audio-lib-pro/utils/audio\_client folder.
+3. Use HCI commands to emulate Button events. For example, use the HCI command to emulate a long press button event to trigger the application to enter Bluetooth&#174; discoverable and connectable mode. The python sample code can be found in the audio-lib-pro/utils/audio\_client folder.
+4. Using Bluetooth&#174; on a phone, find and pair with the "Headset" Bluetooth&#174; audio device.
+5. Once pairing is completed, stream music from your phone to the headset app.
 
-The previous Python-based `audio-lib-pro/utils/audio_client` test flow is no longer the primary validation path for this project. Use ClientControl for bring-up and feature testing.
+### Instruction Detail
 
-## SPI as transport instead of UART
+On startup this app:
 
-1. Download uart\_spi\_bridge application on a 20706A2 board.
-2. Connect SPI pins as indicated below,
+1. After confirming the download is complete, please execute the Python script **play_headset.py** on the test computer.
+2. Press F1, which will put the device into pairing mode; it can then be found and paired with via a smartphone/PC.
 
-    Master (20706A2):
+If using A2DP:
 
-    - SPI CLK     - P36(J19.6)
-    - SPI MOSI    - P0(J22.6)
-    - SPI MISO    - P25(J19.4)
-    - SPI CS      - P26(J22.4)
-    - SLAVE READY - P12(J22.7)
-    - GND         - J19.8
+1. Open any media player on your phone.
+2. You can now play music from the test computer.
+3. Pressing F2 will execute the play/pause audio music
+4. Pressing F3 will execute the previous track action on the audio player
+5. pressing F4 will move to the next track.
 
-    Slave:
+If using HFP:
 
-    - SPI CLK     - P38(D13)
-    - SPI MOSI    - P28(D11)
-    - SPI MISO    - P01(D12)
-    - SPI CS      - P07(D10)
-    - SLAVE READY - P06(D8)
-    - GND         - J3.4
+1. Use your phone to make a call.
+2. At this time, pressing F2 will allow you to answer the call or hang up.
+3. For long press F1 will allow you to decline the call.
 
-3. Ensure that pin config array has the following pins configured correctly,
+Once unpaired, the user must press F1 to let device entering pairing mode.
 
-    [PLATFORM_GPIO_1] = {WICED_P01, spi_0_miso_0_TRIGGER_IN},
-    [PLATFORM_GPIO_4] = {WICED_P06, WICED_SPI_1_SLAVE_READY},
-    [PLATFORM_GPIO_5] = {WICED_P07, spi_0_cs_0_TRIGGER_IN},
-    [PLATFORM_GPIO_11] = {WICED_P28, spi_0_mosi_0_TRIGGER_IN},
-    [PLATFORM_GPIO_15] = {WICED_P38, spi_0_clk_0_TRIGGER_IN},
+## Google Fast Pair and LE Connection
 
-BR/EDR Audio Source and AVRC Target:
+For the CYW20721 boards, they all support Google Fast Pair and Bluetooth&#174; LE connection; however, CYW20706 boards do not support Google Fast Pair and Bluetooth&#174; LE connection.
 
-- The Watch app can demonstrate how to use BR/EDR Audio Source and AVRC TG profiles.
-- Audio Source can use I2S interrupt or SW timer to decide the timing to read PCM.
-  For media type as 'I2S input', it will use I2S interrupt, and you need to configure 4 GPIOs as AIROC&#8482; I2S PINs.
-  For media type as 'Wav file' or 'Sine wave', it will use SW timer by calling wiced\_audio\_use\_sw\_timing(1).
-  In general, if using the "WICED HCI" UART to transmit audio, it must either allocate I2S pins on unused pins for
-  I2S interrupt OR use wiced\_audio\_use\_sw\_timing(1) to enable SW timer.
-- Use the buttons in the ClientControl AV Source tab.
-- To play a sine wave sample, set the audio frequency to the desired value (48kHz, 44.1kHz, etc.)
-  and select the Media type as 'Sine Wave' in the UI. In this case, built-in sine wave audio is played.
-- To play music from a .wav file, select the Media type as File, browse and select a .wav file,
-  and set the audio frequency to the desired value (48kHz, 44.1kHz, etc.)
-  In this case, audio for the .wav file is routed over the "WICED HCI" UART to the AIROC&#8482; board.<br>
-
-sinc\_44100\_16\_L440\_R1000\_50s\_stereo.wav in the app folder can be used as the input of 44.1KHz 16bits stereo samples.
-- To play music from a .mp3 file, select the Media type as File, browse and select a .mp3 file,
-  and set the audio frequency to the desired value (48kHz, 44.1kHz, etc.)
-  In this case, audio for the .mp3 file is routed over the "WICED HCI" UART to the AIROC&#8482; board.
-
-sinc\_44100\_mono.mp3, sinc\_44100\_stereo.mp3, sinc\_48000\_mono.mp3 and sinc\_48000\_stereo.mp3 in MP3\_sample folder
-  can be used as the input of 44.1KHz/48kHz Mono/stereo samples.
-  Use only the .mp3 files provided with the application in the 'MP3_samples' folder.
-- To play music from the Line-In jack, select the Media type as 'I2S input' and set the
-  audio frequency to the desired value (48kHz, 44.1kHz, etc.)
-  In this case, audio from Line-In is encoded into I2S signals and routed to the AIROC&#8482; board.
-- Put an audio sink device such as a Bluetooth&#174; headphone/speaker in pairable mode.
-- Click on the "Start" button from the "BR/EDR Discovery" combo box in ClientControl to find the audio sink device.
-- Select the peer device in the BR/EDR Discovery combo box.
-- Click the "Connect" button under the AV Source tab.
-- Click the "Start Streaming" button. Music will start playing on the peer device.
-- The WatchAma app uses the AVRCP Target role. Once connected to a headset/speaker,
-  the app can send notifications for play status changes (Play, Pause, Stop) and
-  settings changes (Repeat, Shuffle) to the peer AVRCP controller (such as a headset/speaker).<br/>
-  Note: the songs are shown in the AVRC TG UI and some settings such as Repeat/Shuffle are for testing
-  AVRC commands only, they do not indicate the actual media played and will not change the media played.
-
-BR/EDR AVRCP Controller:
-
-- The Watch app can demonstrate how to use the AVRC CT profile.
-- Disconnect all devices if any are connected.
-- Make an audio source device such as an iPhone discoverable/pairable from the Bluetooth&#174; Settings UI on the phone.
-- Using the "BR/EDR Discovery" "Start" button, search and select the device.
-- Use the buttons in the ClientControl AVRC CT tab to Connect and accept pairing.
-- Play music on the audio source device and control the music via buttons in the AVRC CT tab.
-- In Controller mode, pass-thru commands are executed via Play, Pause, Stop, etc. buttons.
-- Absolute volume change can be done via the drop-down Volume or Vol Up/Down buttons.
-- Note that iPhone does not support Vol buttons.
-- Note that music will continue to play on the audio source device.
-
-iOS ANCS and AMS GATT Services:
-
-- The Watch app can demonstrate how to use AMS and ANCS iOS services as shown below.
-- Disconnect all devices if any are connected.
-- Select Pairable if it is not checked.
-- Click the "Start Adverts" button in the GATT tab.
-- Set MAX_PHONE_CONNECTIONS for support of more than one iPhone.
-- From an iPhone app such as 'LightBlue', find and connect to the 'Watch' app.
-- Allow pairing with the iPhone.
-- AMS:
-  - Play media on each iPhone. Play, Pause, Prev, Next, Vol Up, Vol Down notification messages will be displayed on the UI.
-  - Use buttons like Play, Pause, Prev, Next, Vol Up, and Vol Down in the ClientControl AVRC CT tab to control the music.
-  - Note that music will continue to play on iPhone.
-- ANCS:
-  - Incoming calls and messages to each iPhone notification message will be displayed on the UI.
-  - Make an incoming call to each iPhone. See a call notification displayed on the UI to accept or reject the call. Similarly, missed call notifications are seen.
-  - Send an SMS message to each iPhone to see a message notification.
-
-LE Client:
-
-- The Watch app can demonstrate LE Client functionality as shown below.
-- Make sure there is a Bluetooth&#174; device with GATT services that is advertising. For example, use an app
-  such as 'LightBlue' on your phone and create a 'Virtual Peripheral' such as 'Blood Pressure'.
-- To find GATT devices:
-  - Click on the "Start" button for the "LE Discovery" combo box.
-  - Click on the "Stop" button to end discovery.
-- To connect an LE device:
-  - Choose a device from the "LE Discovery" drop-down combo box and click the "Connect" button.
-- To discover services: Click on the "Discover Services" button
-- To discover characteristics: Enter the handles in the edit box and click
-  on "Discover Characteristics"
-- To discover descriptors: Enter the handles in the edit box and click on
-  "Discover Descriptors"
-- Enter the Handle and Hex Value to write to the remote device using buttons:
-  - "Write": Write a hex value to the remote handle
-  - "Write no rsp": Write a hex value without a response to the remote handle
-  - "Value Notify": Write a notification value to the remote handle
-  - "Value Indicate": Write an indication value to the remote handle
-
-Personal Access Network
-
-- The PANU and PANNAP functions for the watch application are available only on the CYW920721M2EVK-01 board.
-- Modify makefile to disable some features that are not related to PAN. This will reduce memory requirement of this application.
-  - "LE\_INCLUDED=0"
-  - "ANCS\_INCLUDED=0"
-  - "AMS\_INCLUDED=0"
-- Modify makefile as below to enable the PANU function:
-  - "PANU\_SUPPORT=1"
-  - "PANNAP\_SUPPORT=0"
-- After compiling and downloading the image to the CYW920721M2EVK-01 board, open ClientControl.exe.
-- Click the "start" button to scan the "PANNAP" device.
-- Make sure one "PANNAP" device is available. On iPhone for example, go to "Settings", "Personal hotspot", "Allow others to join" and "turn on WLAN and Bluetooth&#174;".
-- In ClientControl when the "PANNAP" device is discovered, go to the "PANU" tab and click the "Connect" button.
-- When the PANU of CYW920721M2EVK-01 is connected to the "PANNAP" device, you can click the "Disconnect" button to disconnect the PAN connection.
-- Due to the lack of a LwIP stack, network access is not available.
-- To test the PANNAP function for the watch project on CYW920721M2EVK-01, modify the makefile to use the PANNAP function:
-  - "PANU\_SUPPORT=0"
-  - "PANNAP\_SUPPORT=1"
-- After compiling and downloading the image to the CYW920721M2EVK-01 board, the PANNAP function is available.
-- Open the mobile phone Bluetooth&#174; menu and scan for the "watch" device.
-- When the "watch" device is discovered, you can connect or disconnect the PAN connection from your mobile phone.
-
-HFP Audio Gateway:
-
-- These targets support HFP Audio Gateway:
-  CYW920721M2EVK-01, CYW920721M2EVK-02, CYW920721M2EVB-03, CYW9M2BASE-43012BT, and CYW943012BTEVK-01
-- Build with "HFP\_AG\_INCLUDED=1" to enable AG. (disables Hands-free Unit simultaneously)
-- The Watch app can demonstrate how to use HFP AG as shown below.
-- Make an HFP Headset (headphone or earbuds) discoverable and pairable by its specific behavior.
-- In ClientControl, click on the "Start" button from the "BR/EDR Discovery" combo box to find the Headset device.
-- Select the peer device in the BR/EDR Discovery combo box.
-- Click the "Connect" button under the ClientControl AG tab.
-- Click the "Audio Connect" button. The AG will create a SCO connection to the Headset, and wide-band speech is supported.
-- Click the "Audio Disconnect" button to remove the SCO connection.
-- Use Speaker Volume and Mic Volume  drop-down menu to set HF Speaker gain and HF Microphone gain respectively.
-- Use the indicators (Service availability, call status, call setup, call held, signal strength, battery value, and roaming) drop-down menu to simulate indicator changes.
-- To simulate incoming/outgoing calls, use the indicators  drop-down menu and RING/CCWA button.
-
-
-HFP Hands-free Unit:
-
-- In this workspace, HF is the default role on `CYBT-343026-EVAL`.
-
-- These targets support HFP Hands-free Unit by default:
-  CYW920721M2EVK-01, CYW920721M2EVK-02, CYW920721M2EVB-03, CYW9M2BASE-43012BT, and CYW943012BTEVK-01
-- To create a hands-free connection with a remote Audio Gateway (AG) device (such as a mobile phone), use ClientControl and choose the Bluetooth&#174; address of the remote AG device from the BR/EDR combo box.<br/>
-  Click the "Connect" button under the HF tab.
-- OR Put the device in discoverable and connectable mode and search for the device from the AG device and connect.
-- The following HF operations can be performed using the ClientControl HF tab:
-   -  Connect / Disconnect the HF or SCO connection
-   -  Answer / Hang up the call
-   -  Dial / Redial the number
-   -  Control Held calls - features supported are:
-      - Release all held
-      - Release active accept other
-      - Place active on hold and accept other
-      - Add held to the conversation (Note: This functionality depends on the support from telecom network operator. AG always supports this feature and responds with OK.)
-   -  Mic / Speaker gain control
-
-## Application Settings
-Application-specific settings are as shown below:
-
-- SLEEP\_SUPPORTED
-    - This option allows the device to enter low power mode. By default, the option is off. When sleep is enabled, ClientControl will not be able to communicate with the embedded app unless a GPIO is asserted.
-    - 43012C0-related target (CYW9M2BASE-43012BT and CYW943012BTEVK-01) does not support this functionality.
-
-- COEX\_SUPPORTED
-    - This option enables Bluetooth&#174; and Wi-Fi coexistence. By default, the option is off.
-
-- OTA\_FW\_UPGRADE
-    - Use this option for OTA firmware upgrade
-    - 43012C0-related target (CYW9M2BASE-43012BT and CYW943012BTEVK-01) does not support this functionality.
-
-- OTA\_SEC\_FW\_UPGRADE
-    - Use this option for secure OTA firmware upgrade
-    - 43012C0-related target (CYW9M2BASE-43012BT and CYW943012BTEVK-01) does not support this functionality.
+## Application Note
+1. Headset\_Standalone doesn't support OTA\_FW\_UPGRADE or voice recognition button at this time.
+2. For Headset\_Standalone on CYBT-343026-EVAL and CYBT-353027-EVAL, when execute play\_headset.py, need to add '0' as the 2nd argument. e.g. python play\_headset.py COM87 0
 
 ## BTSTACK version
 

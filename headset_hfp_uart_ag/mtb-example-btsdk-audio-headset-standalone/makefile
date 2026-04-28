@@ -36,7 +36,7 @@ endif
 #
 # Basic Configuration
 #
-APPNAME=Headset_Standalone
+APPNAME=Watch
 TOOLCHAIN=GCC_ARM
 CONFIG=Debug
 VERBOSE=
@@ -77,14 +77,6 @@ LINKER_SCRIPT=
 PREBUILD=
 POSTBUILD=
 FEATURES=
-CY_IGNORE= \
-  headset_button.c \
-  headset_control.c \
-  headset_control.h \
-  headset_control_le.c \
-  headset_control_le.h \
-  headset_nvram.h \
-  wiced_app_cfg.c
 
 #
 # App features/defaults
@@ -96,9 +88,9 @@ XIP?=xip
 TRANSPORT?=UART
 A2DP_SRC_INCLUDED := 1
 AVRCP_TG_INCLUDED := 1
-AVRCP_CT_INCLUDED := 0
-HFP_AG_INCLUDED := 1
-HFP_HF_INCLUDED := 0
+AVRCP_CT_INCLUDED := 1
+HFP_AG_INCLUDED ?= 1
+HFP_HF_INCLUDED ?= 0
 HCI_TEST_INCLUDED := 1
 LE_INCLUDED := 1
 ANCS_INCLUDED ?= 1
@@ -151,15 +143,6 @@ ifeq ($(TARGET),$(filter $(TARGET), CYW920719B2Q40EVB-01))
 HFP_AG_INCLUDED = 0
 endif
 
-ifeq ($(TARGET),$(filter $(TARGET), CYW920706WCDEVAL CYBT-343026-EVAL CYBT-353027-EVAL))
-ifeq ($(HFP_AG_INCLUDED),1)
-HFP_HF_INCLUDED = 0
-else
-HFP_AG_INCLUDED = 0
-HFP_HF_INCLUDED = 1
-endif
-endif
-
 ifeq ($(TARGET),$(filter $(TARGET), CYW920721M2EVK-01 CYW920721M2EVK-02 CYW920721M2EVB-03 CYW9M2BASE-43012BT CYW943012BTEVK-01))
 ifeq ($(HFP_AG_INCLUDED),1)
 HFP_HF_INCLUDED = 0
@@ -169,8 +152,8 @@ HFP_HF_INCLUDED = 1
 endif
 endif
 
-# Use deterministic per-role BD_ADDR defaults when caller does not provide one.
-# Format must be 12 hex digits without separators.
+# Use a deterministic AG-side BD_ADDR when the caller does not provide one.
+# This keeps the AG board distinct from the HF board by default.
 ifeq ($(BT_DEVICE_ADDRESS),default)
 ifeq ($(HFP_AG_INCLUDED),1)
 BT_DEVICE_ADDRESS := 20706A20D340
@@ -489,7 +472,7 @@ CY_GETLIBS_SHARED_PATH=../
 CY_GETLIBS_SHARED_NAME=mtb_shared
 
 # Absolute path to the compiler (Default: GCC in the tools)
-CY_COMPILER_PATH=
+# CY_COMPILER_PATH=
 
 # Locate ModusToolbox IDE helper tools folders in default installation
 # locations for Windows, Linux, and macOS.

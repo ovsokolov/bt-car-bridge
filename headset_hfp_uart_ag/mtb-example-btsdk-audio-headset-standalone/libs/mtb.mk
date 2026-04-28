@@ -9,12 +9,11 @@
 
 # The search paths for the included middleware
 SEARCH_btsdk-audio=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/dev-kit/libraries/btsdk-audio/release-v4.9.5
-SEARCH_btsdk-drivers=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/dev-kit/libraries/btsdk-drivers/release-v4.8.0
-SEARCH_btsdk-gfps=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/dev-kit/libraries/btsdk-gfps/release-v4.4.2
 SEARCH_btsdk-host-apps-bt-ble=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/tools/btsdk-host-apps-bt-ble/release-v4.9.3
+SEARCH_btsdk-ota=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/dev-kit/libraries/btsdk-ota/release-v4.5.1
+SEARCH_btsdk-pan=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/dev-kit/libraries/btsdk-pan/release-v3.3.0
 SEARCH_btsdk-peer-apps-ble=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/tools/btsdk-peer-apps-ble/release-v3.3.0
 SEARCH_btsdk-peer-apps-ota=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/tools/btsdk-peer-apps-ota/release-v3.3.0
-SEARCH_btsdk-rfcomm=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/dev-kit/libraries/btsdk-rfcomm/release-v4.6.3
 SEARCH_TARGET_CYBT-343026-EVAL=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/dev-kit/bsp/TARGET_CYBT-343026-EVAL/release-v4.7.0
 SEARCH_20706A2=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/dev-kit/baselib/20706A2/release-v4.9.5
 SEARCH_btsdk-common=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_NAME)/wiced_btsdk/dev-kit/libraries/btsdk-common/release-v4.7.0
@@ -25,12 +24,11 @@ SEARCH_core-make=$(patsubst %/,%,$(CY_GETLIBS_SHARED_PATH))/$(CY_GETLIBS_SHARED_
 
 # Search libraries added to build
 SEARCH+=$(SEARCH_btsdk-audio)
-SEARCH+=$(SEARCH_btsdk-drivers)
-SEARCH+=$(SEARCH_btsdk-gfps)
 SEARCH+=$(SEARCH_btsdk-host-apps-bt-ble)
+SEARCH+=$(SEARCH_btsdk-ota)
+SEARCH+=$(SEARCH_btsdk-pan)
 SEARCH+=$(SEARCH_btsdk-peer-apps-ble)
 SEARCH+=$(SEARCH_btsdk-peer-apps-ota)
-SEARCH+=$(SEARCH_btsdk-rfcomm)
 SEARCH+=$(SEARCH_TARGET_CYBT-343026-EVAL)
 SEARCH+=$(SEARCH_20706A2)
 SEARCH+=$(SEARCH_btsdk-common)
@@ -41,12 +39,11 @@ SEARCH+=$(SEARCH_core-make)
 
 -include $(CY_INTERNAL_APP_PATH)/importedbsp.mk
 COMPONENTS += MW_BTSDK_AUDIO
-COMPONENTS += MW_BTSDK_DRIVERS
-COMPONENTS += MW_BTSDK_GFPS
 COMPONENTS += MW_BTSDK_HOST_APPS_BT_BLE
+COMPONENTS += MW_BTSDK_OTA
+COMPONENTS += MW_BTSDK_PAN
 COMPONENTS += MW_BTSDK_PEER_APPS_BLE
 COMPONENTS += MW_BTSDK_PEER_APPS_OTA
-COMPONENTS += MW_BTSDK_RFCOMM
 COMPONENTS += MW_TARGET_CYBT_343026_EVAL
 COMPONENTS += MW_20706A2
 COMPONENTS += MW_BTSDK_COMMON

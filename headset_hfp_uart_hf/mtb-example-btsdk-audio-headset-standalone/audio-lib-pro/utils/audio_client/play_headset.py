@@ -36,7 +36,7 @@ import hci
 import logging
 import struct
 import queue
-#import pyaudio
+import pyaudio
 import traceback
 import signal
 import time
@@ -143,7 +143,7 @@ if (is_fw_download):
         exit(1)
 else:
     # Default speed: 115200 bps
-    baud_rate = 921600
+    baud_rate = 3000000
     control = hci.Controller(com_port, baud_rate)
 
 nv = nvram()
@@ -154,7 +154,7 @@ for id in nv.ids():
 control.start_bt()
 
 # PyAudio
-#p = pyaudio.PyAudio()
+p = pyaudio.PyAudio()
 callback_finished = threading.Event()
 callback_stop_stream = threading.Event()
 def rec_callback(in_data, frame_count, time_info, status):

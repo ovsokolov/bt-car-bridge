@@ -1,7 +1,7 @@
-# Headset HFP app
+# Watch app
 
 ## Overview
-This project now hosts the watch example's full ClientControl-oriented HCI feature set inside the `Headset_Standalone` application for `CYBT-343026-EVAL` by default. It demonstrates Bluetooth&#174; A2DP source, AVRCP Controller/Target, Apple Media Service (AMS), Apple Notification Center Service (ANCS), Personal Access Network (PAN), and HFP Audio Gateway/Hands-free Unit.
+This app demonstrates Bluetooth&#174; A2DP source, AVRCP Controller/Target, Apple Media Service (AMS), Apple Notification Center Service (ANCS), Personal Access Network (PAN), and HFP Audio Gateway/Hands-free Unit.
 
 Features demonstrated:
 
@@ -17,14 +17,12 @@ Features demonstrated:
 ## Instructions
 To demonstrate the app, follow these steps:
 
-1. Build and download the application to the AIROC&#8482; board. The default target in this workspace is `CYBT-343026-EVAL`.
+1. Build and download the application to the AIROC&#8482; board.
 2. Open the ClientControl application
      - [UART] Open the "WICED HCI" port for the device. (Default baud rate configured in the application is defined by the BSP HCI\_UART\_DEAULT\_BAUD #define, usually either 3M or 115200 depending on the board UART capabilities.)
      - [SPI] Open the "WICED PUART" port for the SPI master device (using 115200 baud rate and without flow control). Refer to the instructions below for SPI setup (supported on 20719B2 only)
 3. Use the ClientControl application to send various commands as mentioned below.
 4. Run the BTSpy program to view protocol and application traces.
-
-The previous Python-based `audio-lib-pro/utils/audio_client` test flow is no longer the primary validation path for this project. Use ClientControl for bring-up and feature testing.
 
 ## SPI as transport instead of UART
 

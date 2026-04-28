@@ -22,8 +22,8 @@ from .hci import (
     GROUP_HF,
     opcode,
 )
-from .models import BridgeState, RemoteDevice
-from .session import SERIAL_IMPORT_ERROR, SerialBridgeSession, SerialPortInfo
+from .models import BridgeState, RemoteDevice, TraceSessionInfo
+from .session import SERIAL_IMPORT_ERROR, RawTraceSession, SerialBridgeSession, SerialPortInfo
 from .storage import apply_saved_state, save_state
 
 
@@ -65,6 +65,18 @@ class SideWidgets:
     devices: list[str]
 
 
+@dataclass
+class TraceWidgets:
+    port_var: tk.StringVar
+    status_var: tk.StringVar
+    baud_var: tk.StringVar
+    send_var: tk.StringVar
+    text: tk.Text
+    open_button: ttk.Button
+    close_button: ttk.Button
+    port_combo: ttk.Combobox
+
+
 class BridgeApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
@@ -79,12 +91,20 @@ class BridgeApp:
         self._port_map: dict[str, SerialPortInfo] = {}
         self._port_label_to_device: dict[str, str] = {}
         self._side_widgets: dict[str, SideWidgets] = {}
+        self._trace_widgets: dict[str, TraceWidgets] = {}
+        self._puart_relay_enabled = tk.BooleanVar(value=True)
 
         self.phone_session = SerialBridgeSession(self.state.phone_session, self._make_event_sink("phone"))
         self.car_session = SerialBridgeSession(self.state.car_session, self._make_event_sink("car"))
         self.sessions = {
             "phone": self.phone_session,
             "car": self.car_session,
+        }
+        self.phone_trace_session = RawTraceSession(TraceSessionInfo(label="Phone PUART"), self._make_event_sink("phone_trace"))
+        self.car_trace_session = RawTraceSession(TraceSessionInfo(label="Car PUART"), self._make_event_sink("car_trace"))
+        self.trace_sessions = {
+            "phone_trace": self.phone_trace_session,
+            "car_trace": self.car_trace_session,
         }
 
         self.summary_var = tk.StringVar(value="Ready")
@@ -161,8 +181,10 @@ class BridgeApp:
 
         control_tab = ttk.Frame(tabs, padding=8)
         trace_tab = ttk.Frame(tabs, padding=8)
+        puart_tab = ttk.Frame(tabs, padding=8)
         tabs.add(control_tab, text="Control")
         tabs.add(trace_tab, text="Bridge Trace")
+        tabs.add(puart_tab, text="PUART Trace")
 
         top = ttk.Frame(control_tab)
         top.pack(fill=tk.X)
@@ -192,6 +214,30 @@ class BridgeApp:
         self.bridge_log = tk.Text(trace_box, height=24, wrap="word")
         self.bridge_log.pack(fill=tk.BOTH, expand=True)
         self.bridge_log.configure(state=tk.DISABLED)
+
+        puart_top = ttk.Frame(puart_tab)
+        puart_top.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(
+            puart_top,
+            text="Open the devkit PUART COM ports here to watch raw bridge text directly, independent of HCI and BTSpy.",
+            wraplength=1200,
+            justify=tk.LEFT,
+        ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(puart_top, text="Clear PUART Logs", command=self.clear_puart_logs).pack(side=tk.RIGHT)
+        ttk.Checkbutton(
+            puart_top,
+            text="Relay BR1 lines between PUART ports",
+            variable=self._puart_relay_enabled,
+        ).pack(side=tk.RIGHT, padx=(0, 12))
+
+        puart_split = ttk.Panedwindow(puart_tab, orient=tk.HORIZONTAL)
+        puart_split.pack(fill=tk.BOTH, expand=True)
+        phone_trace_frame = ttk.Frame(puart_split, padding=8)
+        car_trace_frame = ttk.Frame(puart_split, padding=8)
+        puart_split.add(phone_trace_frame, weight=1)
+        puart_split.add(car_trace_frame, weight=1)
+        self._trace_widgets["phone_trace"] = self._build_trace_side(phone_trace_frame, "phone_trace", "Phone PUART")
+        self._trace_widgets["car_trace"] = self._build_trace_side(car_trace_frame, "car_trace", "Car PUART")
 
     def _build_side(self, parent: ttk.Frame, side: str, title: str) -> SideWidgets:
         session = self.sessions[side]
@@ -264,8 +310,10 @@ class BridgeApp:
         if side == "car":
             actions = ttk.Frame(frame)
             actions.pack(fill=tk.X, pady=(0, 6))
+            ttk.Button(actions, text="Refresh Info", command=lambda: self._refresh_board_info("car")).pack(side=tk.LEFT, padx=(0, 4), pady=2)
             ttk.Button(actions, text="Start Inquiry", command=self.car_session.start_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
             ttk.Button(actions, text="Stop Inquiry", command=self.car_session.stop_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
+            ttk.Button(actions, text="Send PUART Hello", command=lambda: self.car_session.set_bridge_hello(True)).pack(side=tk.LEFT, padx=(0, 4), pady=2)
             ttk.Button(actions, text="Connect Selected", command=self.pair_selected_car_device).pack(side=tk.LEFT, padx=(0, 4), pady=2)
 
         content = ttk.Panedwindow(frame, orient=tk.HORIZONTAL if side == "car" else tk.VERTICAL)
@@ -310,6 +358,60 @@ class BridgeApp:
             devices=[],
         )
 
+    def _build_trace_side(self, parent: ttk.Frame, key: str, title: str) -> TraceWidgets:
+        session = self.trace_sessions[key]
+        frame = ttk.LabelFrame(parent, text=title, padding=8)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        port_var = tk.StringVar(value=session.info.port)
+        status_var = tk.StringVar(value="Closed")
+        baud_var = tk.StringVar(value=str(session.info.baud_rate))
+        send_var = tk.StringVar(value=self._default_trace_peer_hello(key))
+
+        row = ttk.Frame(frame)
+        row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(row, text="Port").pack(side=tk.LEFT)
+        port_combo = ttk.Combobox(row, textvariable=port_var, state="normal", width=38)
+        port_combo.pack(side=tk.LEFT, padx=(6, 6))
+        ttk.Label(row, text="Baud").pack(side=tk.LEFT)
+        ttk.Entry(row, textvariable=baud_var, width=10).pack(side=tk.LEFT, padx=(6, 6))
+        open_button = ttk.Button(row, text="Open", command=lambda name=key: self.open_trace_session(name))
+        open_button.pack(side=tk.LEFT)
+        close_button = ttk.Button(row, text="Close", command=lambda name=key: self.close_trace_session(name))
+        close_button.pack(side=tk.LEFT, padx=(6, 0))
+
+        ttk.Label(
+            frame,
+            text="Use this for the board's exposed PUART COM port. The monitor shows incoming text lines and raw byte chunks.",
+            wraplength=650,
+            justify=tk.LEFT,
+        ).pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(frame, textvariable=status_var).pack(fill=tk.X, pady=(0, 6))
+
+        send_row = ttk.Frame(frame)
+        send_row.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(send_row, text="TX").pack(side=tk.LEFT)
+        send_entry = ttk.Entry(send_row, textvariable=send_var)
+        send_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
+        send_entry.bind("<Return>", lambda _event, name=key: self.send_trace_line(name))
+        ttk.Button(send_row, text="Send Line", command=lambda name=key: self.send_trace_line(name)).pack(side=tk.LEFT)
+        ttk.Button(send_row, text="Peer Hello", command=lambda name=key: self.send_trace_peer_hello(name)).pack(side=tk.LEFT, padx=(6, 0))
+
+        text = tk.Text(frame, height=28, wrap="word")
+        text.pack(fill=tk.BOTH, expand=True)
+        text.configure(state=tk.DISABLED)
+
+        return TraceWidgets(
+            port_var=port_var,
+            status_var=status_var,
+            baud_var=baud_var,
+            send_var=send_var,
+            text=text,
+            open_button=open_button,
+            close_button=close_button,
+            port_combo=port_combo,
+        )
+
     def _make_event_sink(self, side: str) -> Callable[[str, dict], None]:
         def sink(kind: str, payload: dict) -> None:
             self._event_queue.put((side, kind, payload))
@@ -324,6 +426,10 @@ class BridgeApp:
             widgets.port_combo["values"] = self._port_options
             self._sync_port_var_from_device(side)
             self._update_port_detail(side)
+        for key, widgets in self._trace_widgets.items():
+            widgets.port_combo["values"] = self._port_options
+            self._sync_trace_port_var_from_device(key)
+            self._refresh_trace_side(key)
         if ports:
             self.summary_var.set("Detected ports: " + ", ".join(port.device for port in ports))
         else:
@@ -337,12 +443,54 @@ class BridgeApp:
         self.sessions[side].info.port = port
         self._sync_port_var_from_device(side)
         self.sessions[side].open(port)
+        self.root.after(700, lambda key=side: self._refresh_board_info(key))
         self._save_state()
 
     def close_session(self, side: str) -> None:
         self.sessions[side].close()
         self.refresh_ports()
         self._refresh_side(side)
+
+    def _refresh_board_info(self, side: str) -> None:
+        session = self.sessions[side]
+        if not session.info.is_open:
+            return
+        session.request_version()
+        session.request_local_bda()
+
+    def open_trace_session(self, key: str) -> None:
+        port = self._resolve_trace_port(key)
+        if not port:
+            messagebox.showinfo("Port required", "Select a COM port for the PUART trace first.")
+            return
+        baud_text = self._trace_widgets[key].baud_var.get().strip() or "921600"
+        try:
+            baud_rate = int(baud_text)
+        except ValueError:
+            messagebox.showerror("Invalid baud", f"Baud rate must be a number, got '{baud_text}'.")
+            return
+        self.trace_sessions[key].open(port, baud_rate)
+        self._refresh_trace_side(key)
+
+    def close_trace_session(self, key: str) -> None:
+        self.trace_sessions[key].close()
+        self._refresh_trace_side(key)
+
+    def send_trace_line(self, key: str) -> None:
+        widgets = self._trace_widgets[key]
+        line = widgets.send_var.get().strip()
+        if self.trace_sessions[key].send_line(line):
+            widgets.send_var.set(line)
+
+    def send_trace_peer_hello(self, key: str) -> None:
+        line = self._default_trace_peer_hello(key)
+        self._trace_widgets[key].send_var.set(line)
+        self.send_trace_line(key)
+
+    def _default_trace_peer_hello(self, key: str) -> str:
+        if key == "phone_trace":
+            return "BR1,HELLO,AG"
+        return "BR1,HELLO,HF"
 
     def apply_phone_flags(self) -> None:
         widgets = self._side_widgets["phone"]
@@ -439,9 +587,30 @@ class BridgeApp:
                 return candidate
         return raw_value
 
+    def _resolve_trace_port(self, key: str) -> str:
+        raw_value = self._trace_widgets[key].port_var.get().strip()
+        if raw_value in self._port_label_to_device:
+            return self._port_label_to_device[raw_value]
+        if raw_value in self._port_map:
+            return raw_value
+        if "|" in raw_value:
+            candidate = raw_value.split("|", 1)[0].strip()
+            if candidate in self._port_map:
+                return candidate
+        return raw_value
+
     def _sync_port_var_from_device(self, side: str) -> None:
         widgets = self._side_widgets[side]
         device_name = self.sessions[side].info.port.strip()
+        port = self._port_map.get(device_name)
+        if port is not None:
+            widgets.port_var.set(port.dropdown_label())
+        elif device_name:
+            widgets.port_var.set(device_name)
+
+    def _sync_trace_port_var_from_device(self, key: str) -> None:
+        widgets = self._trace_widgets[key]
+        device_name = self.trace_sessions[key].info.port.strip()
         port = self._port_map.get(device_name)
         if port is not None:
             widgets.port_var.set(port.dropdown_label())
@@ -479,6 +648,10 @@ class BridgeApp:
     def clear_bridge_trace(self) -> None:
         self._replace_text(self.bridge_log, "")
 
+    def clear_puart_logs(self) -> None:
+        for widgets in self._trace_widgets.values():
+            self._replace_text(widgets.text, "")
+
     def _drain_events(self) -> None:
         try:
             while True:
@@ -489,6 +662,10 @@ class BridgeApp:
         self.root.after(100, self._drain_events)
 
     def _handle_event(self, side: str, kind: str, payload: dict) -> None:
+        if side in self._trace_widgets:
+            self._handle_trace_event(side, kind, payload)
+            return
+
         session = self.sessions[side]
         info = session.info
 
@@ -525,6 +702,39 @@ class BridgeApp:
             self._handle_bridge_packet(side, payload)
         self._refresh_side(side)
         self._update_summary()
+
+    def _handle_trace_event(self, key: str, kind: str, payload: dict) -> None:
+        session = self.trace_sessions[key]
+        widgets = self._trace_widgets[key]
+        if kind == "log":
+            message = str(payload.get("message", ""))
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            self._append_text(widgets.text, f"[{timestamp}] [{session.info.label}] {message}\n")
+        elif kind == "trace_line":
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            text = str(payload.get("text", ""))
+            self._append_text(widgets.text, f"[{timestamp}] {text}\n")
+            self._relay_puart_line(key, text)
+        elif kind == "trace_raw":
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            text = str(payload.get("text", ""))
+            self._append_text(widgets.text, f"[{timestamp}] [raw] {text}\n")
+        elif kind == "state":
+            self._refresh_trace_side(key)
+
+    def _relay_puart_line(self, source_key: str, text: str) -> None:
+        if not self._puart_relay_enabled.get():
+            return
+        line = text.strip()
+        if not line.startswith("BR1,"):
+            return
+        target_key = "car_trace" if source_key == "phone_trace" else "phone_trace"
+        target_session = self.trace_sessions[target_key]
+        if not target_session.info.is_open:
+            self._bridge_trace(f"PUART relay skipped {source_key} -> {target_key}: target port is closed ({line})")
+            return
+        if target_session.send_line(line):
+            self._bridge_trace(f"PUART relay {source_key} -> {target_key}: {line}")
 
     def _handle_bridge_packet(self, side: str, payload: dict) -> None:
         if not self._bridge_enabled:
@@ -1622,6 +1832,8 @@ class BridgeApp:
     def _refresh_all_views(self) -> None:
         for side in self.sessions:
             self._refresh_side(side)
+        for key in self.trace_sessions:
+            self._refresh_trace_side(key)
         self._update_summary()
 
     def _refresh_side(self, side: str) -> None:
@@ -1648,23 +1860,14 @@ class BridgeApp:
         widgets.open_button.configure(state=tk.NORMAL if not info.is_open else tk.DISABLED)
         widgets.close_button.configure(state=tk.NORMAL if info.is_open else tk.DISABLED)
 
-        devices = sorted(
-            info.discovered_devices.values(),
-            key=lambda item: ((item.name or "").lower(), item.address),
-        )
-        current_selection = widgets.listbox.curselection()
-        selected_address = widgets.devices[current_selection[0]] if current_selection else ""
-        widgets.devices = [device.address for device in devices]
-
-        widgets.listbox.delete(0, tk.END)
-        selected_index = None
-        for index, device in enumerate(devices):
-            label = self._device_label(device)
-            widgets.listbox.insert(tk.END, label)
-            if device.address == selected_address:
-                selected_index = index
-        if selected_index is not None:
-            widgets.listbox.selection_set(selected_index)
+    def _refresh_trace_side(self, key: str) -> None:
+        session = self.trace_sessions[key]
+        widgets = self._trace_widgets[key]
+        self._sync_trace_port_var_from_device(key)
+        widgets.baud_var.set(str(session.info.baud_rate))
+        widgets.status_var.set(session.info.last_status or ("Open" if session.info.is_open else "Closed"))
+        widgets.open_button.configure(state=tk.NORMAL if not session.info.is_open else tk.DISABLED)
+        widgets.close_button.configure(state=tk.NORMAL if session.info.is_open else tk.DISABLED)
 
     def _device_label(self, device: RemoteDevice) -> str:
         name = device.name.strip() or "<unknown>"
@@ -1700,6 +1903,8 @@ class BridgeApp:
     def _on_close(self) -> None:
         self._save_state()
         for session in self.sessions.values():
+            session.close()
+        for session in self.trace_sessions.values():
             session.close()
         self.refresh_ports()
         self.root.destroy()

@@ -95,7 +95,9 @@
 
 #define AV_SBC_MAX_BITPOOL          53
 
-#if defined(CYW43012C0) || defined(CYW20819A1) || defined(CYW43022C1)
+#if defined(CYW20706A2)
+#define AUDIO_TX_BUFFER_SIZE        0
+#elif defined(CYW43012C0) || defined(CYW20819A1) || defined(CYW43022C1)
 #define AUDIO_TX_BUFFER_SIZE        0x2000
 #else
 #define AUDIO_TX_BUFFER_SIZE        11000
@@ -104,6 +106,8 @@
 /* It needs 15K bytes for HFP(mSBC use mainly) */
 #if defined(WICED_APP_HFP_HF_INCLUDED)
 #define AUDIO_CODEC_BUFFER_SIZE     (16 * 1024) //0x4000
+#elif defined(CYW20706A2) && defined(WICED_APP_HFP_AG_INCLUDED)
+#define AUDIO_CODEC_BUFFER_SIZE     0x3000
 #elif defined(WICED_APP_HFP_AG_INCLUDED)
 #define AUDIO_BUF_SIZE_MAIN_HFP     (15 * 1024) //0x3C00
 #define AUDIO_CODEC_BUFFER_SIZE     AUDIO_BUF_SIZE_MAIN_HFP
@@ -134,7 +138,7 @@ const wiced_bt_cfg_br_t wiced_bt_cfg_br =
 {
     .br_max_simultaneous_links = 3,
     .br_max_rx_pdu_size = 1024,
-    .device_class = {0x20, 0x04, 0x24},                     /**< Local device class: Audio/Video, car audio */
+    .device_class = {0x20, 0x07, 0x04},                     /**< Local device class */
 
     .rfcomm_cfg = /* RFCOMM configuration */
     {

@@ -31,49 +31,23 @@
  * so agrees to indemnify Cypress against all liability.
  */
 
-
 #ifndef _WICED_APP_H_
 #define _WICED_APP_H_
 
 #include "wiced_bt_trace.h"
-#include "wiced_transport.h"
-
-/*****************************************************************************
-**  Structures
-*****************************************************************************/
-typedef struct
-{
-    void    *p_next;
-    uint16_t nvram_id;
-    uint8_t  chunk_len;
-    uint8_t  data[1];
-} hci_control_nvram_chunk_t;
+#include "wiced_hci.h"
 
 #define WICED_PIN_CODE_LEN                  4
-
-typedef struct
-{
-    wiced_bt_device_address_t   identity_addr;
-    wiced_bt_device_address_t   random_addr;
-} app_identity_random_mapping_t;
-
-#define ADDR_MAPPING_MAX_COUNT 15 //as same as APP_CFG_ULP_MAX_CONNECTION
-
-/******************************************************
- *               extern function/variables
- ******************************************************/
-app_identity_random_mapping_t * get_addr_mapping_by_random_addr(wiced_bt_device_address_t random_addr);
-app_identity_random_mapping_t * get_addr_mapping_by_identity_addr(wiced_bt_device_address_t identity_addr);
-app_identity_random_mapping_t * get_empty_addr_mapping();
-void hci_control_transport_status( wiced_transport_type_t type );
-uint32_t hci_control_proc_rx_cmd( uint8_t *p_data, uint32_t length );
-wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_management_evt_data_t *p_event_data);
-void hf_autoreconnect_restart_full(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds);
-void hf_autoreconnect_continue_from_hfp(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds);
-void hf_autoreconnect_continue_from_avrcp(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds);
-
-extern hci_control_nvram_chunk_t *p_nvram_first;
 extern const uint8_t pincode[WICED_PIN_CODE_LEN];
 
+/* BR/EDR Profiles/Applications */
+#define WICED_APP_AUDIO_SRC_INCLUDED        FALSE
+#define WICED_APP_AUDIO_RC_TG_INCLUDED      TRUE
+#define WICED_APP_AUDIO_RC_CT_INCLUDED      FALSE
+#define WICED_APP_AUDIO_SINK_INCLUDED       TRUE
+
+/* LE Profiles/Applications */
+#define WICED_APP_ANCS_INCLUDED             FALSE
+#define WICED_APP_TEST_INCLUDED             FALSE
 
 #endif /* _WICED_APP_H_ */

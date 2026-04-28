@@ -182,7 +182,6 @@
 #include <wiced_bt_gatt.h>
 #include <wiced_bt_sdp.h>
 #include <wiced_hal_puart.h>
-#include <wiced_hal_nvram.h>
 #include <wiced_hal_gpio.h>
 #ifdef CYW43012C0
 #include <wiced_hal_watchdog.h>
@@ -353,12 +352,10 @@ static void hci_control_handle_enable_disable_coex ( wiced_bool_t enable );
 #endif
 static void hci_control_handle_read_local_bda( void );
 static void hci_control_handle_user_confirmation( uint8_t *p_bda, uint8_t accept_pairing );
-static void hci_control_handle_pin_reply(uint8_t *p_data, uint32_t data_len);
-static void hci_control_handle_unbond_device(uint8_t *p_bda);
-static void hci_control_handle_bond_device(uint8_t *p_bda);
-static wiced_result_t hci_control_delete_bonded_device(wiced_bt_device_address_t bd_addr);
 static void hci_control_handle_read_buffer_stats( void );
 static void hci_control_send_device_started_evt( void );
+static void hci_control_send_startup_snapshot( void );
+extern void hci_control_misc_handle_get_version( void );
 extern wiced_result_t wiced_bt_avrc_ct_cleanup( void );
 extern uint8_t find_index_by_conn_id(uint16_t conn_id);
 #if (defined(SLEEP_SUPPORTED) && (SLEEP_SUPPORTED == WICED_TRUE))
@@ -373,36 +370,6 @@ static void hci_control_sleep_configure(void);
 /******************************************************
  *               Function Definitions
  ******************************************************/
-static void hci_control_enforce_fixed_roles(void)
-{
-#if defined(WICED_APP_HFP_AG_INCLUDED) && !defined(WICED_APP_HFP_HF_INCLUDED)
-    if (hfp_profile_role != HFP_AUDIO_GATEWAY_ROLE)
-    {
-        WICED_BT_TRACE("[ROLE_LOCK] forcing HFP role to AG\n");
-        hfp_profile_role = HFP_AUDIO_GATEWAY_ROLE;
-    }
-#elif defined(WICED_APP_HFP_HF_INCLUDED) && !defined(WICED_APP_HFP_AG_INCLUDED)
-    if (hfp_profile_role != HFP_HANDSFREE_UNIT_ROLE)
-    {
-        WICED_BT_TRACE("[ROLE_LOCK] forcing HFP role to HF\n");
-        hfp_profile_role = HFP_HANDSFREE_UNIT_ROLE;
-    }
-#endif
-
-#if defined(WICED_APP_AUDIO_RC_CT_INCLUDED) && !defined(WICED_APP_AUDIO_RC_TG_INCLUDED)
-    if (avrcp_profile_role != AVRCP_CONTROLLER_ROLE)
-    {
-        WICED_BT_TRACE("[ROLE_LOCK] forcing AVRCP role to CT\n");
-        avrcp_profile_role = AVRCP_CONTROLLER_ROLE;
-    }
-#elif defined(WICED_APP_AUDIO_RC_TG_INCLUDED) && !defined(WICED_APP_AUDIO_RC_CT_INCLUDED)
-    if (avrcp_profile_role != AVRCP_TARGET_ROLE)
-    {
-        WICED_BT_TRACE("[ROLE_LOCK] forcing AVRCP role to TG\n");
-        avrcp_profile_role = AVRCP_TARGET_ROLE;
-    }
-#endif
-}
 
 void hci_control_init(void)
 {
@@ -418,8 +385,6 @@ void hci_control_init(void)
 
 void hci_control_post_init(void)
 {
-    hci_control_enforce_fixed_roles();
-
 #ifdef WICED_APP_LE_INCLUDED
     hci_control_le_enable(&wiced_bt_cfg_settings);
     //wiced_bt_ble_config_privacy(WICED_FALSE);
@@ -473,18 +438,6 @@ void hci_control_post_init(void)
 
     if (p_key_info_pool == NULL)
         WICED_BT_TRACE("Err: wiced_bt_create_pool failed\n");
-
-    /* Keep BR/EDR bring-up independent of the host UI. The board should remain
-     * pairable/discoverable/connectable after boot even when no serial client is open. */
-    hci_control_cb.pairing_allowed = WICED_TRUE;
-    wiced_bt_set_pairable_mode( hci_control_cb.pairing_allowed, 0 );
-    wiced_bt_dev_set_discoverability( BTM_GENERAL_DISCOVERABLE,
-                                      BTM_DEFAULT_DISC_WINDOW,
-                                      BTM_DEFAULT_DISC_INTERVAL );
-    wiced_bt_dev_set_connectability( WICED_TRUE,
-                                     BTM_DEFAULT_CONN_WINDOW,
-                                     BTM_DEFAULT_CONN_INTERVAL );
-    WICED_BT_TRACE( "Startup BR/EDR visibility enabled without host UI\n" );
 
 #if (defined(SLEEP_SUPPORTED) && (SLEEP_SUPPORTED == WICED_TRUE))
     hci_control_sleep_configure();
@@ -1005,19 +958,6 @@ void hci_control_device_handle_command( uint16_t cmd_opcode, uint8_t* p_data, ui
         hci_control_handle_user_confirmation( p_data, p_data[6] );
         break;
 
-    case HCI_CONTROL_COMMAND_BOND:
-        hci_control_handle_bond_device(p_data);
-        break;
-
-    case HCI_CONTROL_COMMAND_UNBOND:
-    case HCI_CONTROL_COMMAND_UNBOND_DEVICE:
-        hci_control_handle_unbond_device(p_data);
-        break;
-
-    case HCI_CONTROL_COMMAND_PIN_REPLY:
-        hci_control_handle_pin_reply( p_data, data_len );
-        break;
-
     case HCI_CONTROL_COMMAND_READ_BUFF_STATS:
         hci_control_handle_read_buffer_stats ();
         break;
@@ -1058,7 +998,7 @@ void hci_control_handle_trace_enable( uint8_t *p_data )
         wiced_bt_dev_register_hci_trace( NULL);
     }
 #if (defined(SLEEP_SUPPORTED) && (SLEEP_SUPPORTED == WICED_TRUE))
-    route_debug = WICED_ROUTE_DEBUG_TO_WICED_UART;
+    route_debug = WICED_ROUTE_DEBUG_TO_PUART;
 #endif
 
 // In SPI transport case, PUART is recommended for debug traces and is set to PUART by default.
@@ -1273,68 +1213,19 @@ void hci_control_handle_user_confirmation( uint8_t *p_bda, uint8_t accept_pairin
 }
 
 /*
- *  Handle Bond Device received over UART
- */
-void hci_control_handle_bond_device(uint8_t *p_bda)
-{
-    wiced_bt_device_address_t bd_addr;
-    wiced_result_t result;
-
-    STREAM_TO_BDADDR(bd_addr, p_bda);
-    result = wiced_bt_dev_sec_bond(bd_addr, 0, BT_TRANSPORT_BR_EDR, 0, NULL);
-
-    hci_control_send_command_status_evt(
-        HCI_CONTROL_EVENT_COMMAND_STATUS,
-        ((result == WICED_BT_SUCCESS) || (result == WICED_BT_PENDING)) ? HCI_CONTROL_STATUS_SUCCESS : HCI_CONTROL_STATUS_FAILED);
-}
-
-/*
- *  Handle Unbond Device received over UART
- */
-void hci_control_handle_unbond_device(uint8_t *p_bda)
-{
-    wiced_bt_device_address_t bd_addr;
-
-    STREAM_TO_BDADDR(bd_addr, p_bda);
-    hci_control_send_command_status_evt(
-        HCI_CONTROL_EVENT_COMMAND_STATUS,
-        hci_control_delete_bonded_device(bd_addr) == WICED_BT_SUCCESS ? HCI_CONTROL_STATUS_SUCCESS : HCI_CONTROL_STATUS_FAILED);
-}
-
-/*
- *  Handle PIN Reply received over UART
- */
-void hci_control_handle_pin_reply(uint8_t *p_data, uint32_t data_len)
-{
-    wiced_bt_device_address_t bd_addr;
-    uint8_t pin_len;
-
-    if (data_len < (BD_ADDR_LEN + 1))
-    {
-        hci_control_send_command_status_evt(HCI_CONTROL_EVENT_COMMAND_STATUS, HCI_CONTROL_STATUS_INVALID_ARGS);
-        return;
-    }
-
-    STREAM_TO_BDADDR(bd_addr, p_data);
-    pin_len = *p_data++;
-
-    if ((pin_len == 0) || (pin_len > 16) || (data_len < (BD_ADDR_LEN + 1 + pin_len)))
-    {
-        hci_control_send_command_status_evt(HCI_CONTROL_EVENT_COMMAND_STATUS, HCI_CONTROL_STATUS_INVALID_ARGS);
-        return;
-    }
-
-    wiced_bt_dev_pin_code_reply(bd_addr, WICED_BT_SUCCESS, pin_len, p_data);
-    hci_control_send_command_status_evt(HCI_CONTROL_EVENT_COMMAND_STATUS, HCI_CONTROL_STATUS_SUCCESS);
-}
-
-/*
  *  Send Device Started event through UART
  */
 void hci_control_send_device_started_evt( void )
 {
     wiced_transport_send_data( HCI_CONTROL_EVENT_DEVICE_STARTED, NULL, 0 );
     app_pr_dev_started_evt();
+    hci_control_send_startup_snapshot();
+}
+
+static void hci_control_send_startup_snapshot( void )
+{
+    hci_control_misc_handle_get_version();
+    hci_control_handle_read_local_bda();
 }
 
 /*
@@ -1393,16 +1284,6 @@ void hci_control_send_user_confirmation_request_evt( BD_ADDR bda, uint32_t numer
     *p++ = (numeric_value >> 16) & 0xff;
     *p++ = (numeric_value >> 24) & 0xff;
     wiced_transport_send_data( HCI_CONTROL_EVENT_USER_CONFIRMATION, buf, 10 );
-}
-
-/*
- *  Send PIN Request event through UART
- */
-void hci_control_send_pin_request_evt(BD_ADDR bda)
-{
-    uint8_t buf[BD_ADDR_LEN];
-    memcpy(buf, bda, BD_ADDR_LEN);
-    wiced_transport_send_data(HCI_CONTROL_EVENT_PIN_REQUEST, buf, BD_ADDR_LEN);
 }
 
 
@@ -1599,9 +1480,6 @@ int hci_control_write_nvram( int nvram_id, int data_len, void *p_data, wiced_boo
 int hci_control_find_nvram_id(uint8_t *p_data, int len)
 {
     hci_control_nvram_chunk_t *p1;
-    uint8_t                    read_buf[BD_ADDR_LEN];
-    wiced_result_t             status;
-    uint8_t                    nvram_id;
 
     /* Go through the linked list of chunks */
     for (p1 = p_nvram_first; p1 != NULL; p1 = (hci_control_nvram_chunk_t *)p1->p_next)
@@ -1612,23 +1490,6 @@ int hci_control_find_nvram_id(uint8_t *p_data, int len)
             return ( p1->nvram_id );
         }
     }
-
-    if ( len > ( int )sizeof( read_buf ) )
-    {
-        return HCI_CONTROL_INVALID_NVRAM_ID;
-    }
-
-    for ( nvram_id = HCI_CONTROL_FIRST_VALID_NVRAM_ID; nvram_id <= WICED_NVRAM_VSID_END; nvram_id++ )
-    {
-        if ( wiced_hal_read_nvram( nvram_id, ( uint8_t )len, read_buf, &status ) == ( uint8_t )len )
-        {
-            if ( memcmp( read_buf, p_data, len ) == 0 )
-            {
-                return nvram_id;
-            }
-        }
-    }
-
     return HCI_CONTROL_INVALID_NVRAM_ID;
 }
 
@@ -1667,7 +1528,6 @@ static wiced_result_t hci_control_delete_bonded_device(wiced_bt_device_address_t
 void hci_control_delete_nvram( int nvram_id, wiced_bool_t from_host )
 {
     hci_control_nvram_chunk_t *p1, *p2;
-    wiced_result_t             status;
 
     /* If Delete NVRAM data command arrived from host, send a Command Status response to ack command */
     if (from_host)
@@ -1676,13 +1536,7 @@ void hci_control_delete_nvram( int nvram_id, wiced_bool_t from_host )
     }
 
     if ( p_nvram_first == NULL )
-    {
-        if ( ( nvram_id >= WICED_NVRAM_VSID_START ) && ( nvram_id <= WICED_NVRAM_VSID_END ) )
-        {
-            wiced_hal_delete_nvram( ( uint16_t )nvram_id, &status );
-        }
         return;
-    }
 
     /* Special case when need to remove the first chunk */
     if ( ( p_nvram_first != NULL ) && ( p_nvram_first->nvram_id == nvram_id ) )
@@ -1697,10 +1551,6 @@ void hci_control_delete_nvram( int nvram_id, wiced_bool_t from_host )
         {
             p_nvram_first = (hci_control_nvram_chunk_t *)p_nvram_first->p_next;
             wiced_bt_free_buffer( p1 );
-        }
-        if ( ( nvram_id >= WICED_NVRAM_VSID_START ) && ( nvram_id <= WICED_NVRAM_VSID_END ) )
-        {
-            wiced_hal_delete_nvram( ( uint16_t )nvram_id, &status );
         }
         return;
     }
@@ -1721,17 +1571,8 @@ void hci_control_delete_nvram( int nvram_id, wiced_bool_t from_host )
                 p1->p_next = p2->p_next;
                 wiced_bt_free_buffer( p2 );
             }
-            if ( ( nvram_id >= WICED_NVRAM_VSID_START ) && ( nvram_id <= WICED_NVRAM_VSID_END ) )
-            {
-                wiced_hal_delete_nvram( ( uint16_t )nvram_id, &status );
-            }
             return;
         }
-    }
-
-    if ( ( nvram_id >= WICED_NVRAM_VSID_START ) && ( nvram_id <= WICED_NVRAM_VSID_END ) )
-    {
-        wiced_hal_delete_nvram( ( uint16_t )nvram_id, &status );
     }
 }
 
@@ -1742,7 +1583,6 @@ int hci_control_read_nvram( int nvram_id, void *p_data, int data_len )
 {
     hci_control_nvram_chunk_t *p1;
     int                        data_read = 0;
-    wiced_result_t             status;
 
     /* Go through the linked list of chunks */
     for ( p1 = p_nvram_first; p1 != NULL; p1 = p1->p_next )
@@ -1754,14 +1594,6 @@ int hci_control_read_nvram( int nvram_id, void *p_data, int data_len )
             break;
         }
     }
-
-    if ( ( data_read == 0 ) &&
-         ( nvram_id >= WICED_NVRAM_VSID_START ) &&
-         ( nvram_id <= WICED_NVRAM_VSID_END ) )
-    {
-        data_read = wiced_hal_read_nvram( ( uint8_t )nvram_id, ( uint8_t )data_len, ( uint8_t * )p_data, &status );
-    }
-
     return ( data_read );
 }
 
@@ -1815,13 +1647,6 @@ int hci_control_alloc_nvram_id( void )
  */
 void hci_control_switch_avrcp_role(uint8_t new_role)
 {
-#if defined(WICED_APP_AUDIO_RC_CT_INCLUDED) && !defined(WICED_APP_AUDIO_RC_TG_INCLUDED)
-    WICED_BT_TRACE("[%s] AVRCP role switch blocked (CT-only build). Requested:%d\n", __FUNCTION__, new_role);
-    return;
-#elif defined(WICED_APP_AUDIO_RC_TG_INCLUDED) && !defined(WICED_APP_AUDIO_RC_CT_INCLUDED)
-    WICED_BT_TRACE("[%s] AVRCP role switch blocked (TG-only build). Requested:%d\n", __FUNCTION__, new_role);
-    return;
-#endif
 #if ( defined(WICED_APP_AUDIO_RC_TG_INCLUDED) && defined(WICED_APP_AUDIO_RC_CT_INCLUDED) )
     WICED_BT_TRACE ( "[%s] New Role: %d \n", __FUNCTION__, new_role);
 
@@ -1868,13 +1693,6 @@ void hci_control_transport_status( wiced_transport_type_t type )
 
 void hci_control_switch_hfp_role( uint8_t new_role )
 {
-#if defined(WICED_APP_HFP_HF_INCLUDED) && !defined(WICED_APP_HFP_AG_INCLUDED)
-    WICED_BT_TRACE("[%s] HFP role switch blocked (HF-only build). Requested:%d\n", __FUNCTION__, new_role);
-    return;
-#elif defined(WICED_APP_HFP_AG_INCLUDED) && !defined(WICED_APP_HFP_HF_INCLUDED)
-    WICED_BT_TRACE("[%s] HFP role switch blocked (AG-only build). Requested:%d\n", __FUNCTION__, new_role);
-    return;
-#endif
 #if (defined(WICED_APP_HFP_AG_INCLUDED) && defined(WICED_APP_HFP_HF_INCLUDED))
     WICED_BT_TRACE("[%s] Switch from %d to %d\n", __FUNCTION__, hfp_profile_role, new_role);
     /* switch to new role */

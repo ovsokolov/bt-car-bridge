@@ -42,7 +42,10 @@
 #include "hci_control_api.h"
 #include "hci_control.h"
 #include "hci_control_audio.h"
+#include "wiced_app_cfg.h"
+#include "wiced_memory.h"
 #include "wiced_transport.h"
+#include <string.h>
 
 #define BCM920706 20706
 #define BCM920707 20707
@@ -55,14 +58,21 @@
  *                          Function Declarations
  ******************************************************************************/
 void hci_control_misc_handle_get_version( void );
+static void hci_control_misc_send_identity(void);
+static void hci_control_misc_send_profile_summary(void);
+static void hci_control_misc_send_audio_diag(void);
+static char *hci_control_misc_append_text(char *dst, char *end, const char *text);
+static char *hci_control_misc_append_sep(char *dst, char *end, uint8_t *first_item);
+static char *hci_control_misc_append_audio_role(char *dst, char *end, uint8_t role, uint8_t *first_item);
 
-#ifdef WICED_APP_HFP_AG_INCLUDED
-static const uint8_t bridge_identity[] = "NavTool-CarConnect";
-#elif defined(WICED_APP_HFP_HF_INCLUDED)
-static const uint8_t bridge_identity[] = "NavTool-PhoneConnect";
-#else
-static const uint8_t bridge_identity[] = "NavTool-Bridge";
-#endif
+extern uint8_t ag_startup_stage;
+extern uint8_t ag_audio_init_result;
+extern uint32_t ag_audio_free_before;
+extern uint32_t ag_audio_free_after;
+
+#define HCI_CONTROL_MISC_EVENT_AG_AUDIO_INIT_DIAG   ((HCI_CONTROL_GROUP_MISC << 8) | 0x23)
+#define HCI_CONTROL_MISC_EVENT_PROFILE_SUMMARY      ((HCI_CONTROL_GROUP_MISC << 8) | 0x24)
+static const char bridge_identity_base[] = "NavTool-CarConnect-AGTEST1";
 
 /******************************************************************************
  *                          Variable Definitions
@@ -149,9 +159,162 @@ void hci_control_misc_handle_get_version( void )
     tx_buf[cmd++] = HCI_CONTROL_GROUP_PANU;
 #endif
     wiced_transport_send_data( HCI_CONTROL_MISC_EVENT_VERSION, tx_buf, cmd );
-    wiced_transport_send_data( HCI_CONTROL_MISC_EVENT_BRIDGE_IDENTITY,
-                               (uint8_t *)bridge_identity,
-                               (uint16_t)(sizeof(bridge_identity) - 1) );
+    hci_control_misc_send_identity();
+    hci_control_misc_send_profile_summary();
+    hci_control_misc_send_audio_diag();
 
     hci_control_audio_support_features_send();
+}
+
+static void hci_control_misc_send_identity(void)
+{
+    char identity[64];
+    static const char hex[] = "0123456789ABCDEF";
+    uint16_t len = (uint16_t)strlen(bridge_identity_base);
+
+    if ((len + 8U) >= sizeof(identity))
+    {
+        return;
+    }
+
+    memcpy(identity, bridge_identity_base, len);
+    identity[len++] = '-';
+    identity[len++] = 'S';
+    identity[len++] = (char)('0' + (ag_startup_stage % 10U));
+    identity[len++] = '-';
+    identity[len++] = 'A';
+    identity[len++] = 'I';
+    identity[len++] = hex[(ag_audio_init_result >> 4) & 0x0F];
+    identity[len++] = hex[ag_audio_init_result & 0x0F];
+    identity[len] = '\0';
+
+    wiced_transport_send_data(HCI_CONTROL_MISC_EVENT_BRIDGE_IDENTITY, (uint8_t *)identity, len);
+}
+
+static void hci_control_misc_send_profile_summary(void)
+{
+    char summary[128];
+    char *p = summary;
+    char *end = summary + sizeof(summary) - 1;
+    uint8_t first_profile = 1;
+    uint8_t first_role = 1;
+
+    p = hci_control_misc_append_text(p, end, "profiles=");
+
+#ifdef WICED_APP_LE_INCLUDED
+    p = hci_control_misc_append_sep(p, end, &first_profile);
+    p = hci_control_misc_append_text(p, end, "LE");
+#endif
+#ifdef WICED_APP_AUDIO_SRC_INCLUDED
+    p = hci_control_misc_append_sep(p, end, &first_profile);
+    p = hci_control_misc_append_text(p, end, "A2DP_SRC");
+#endif
+#ifdef WICED_APP_AUDIO_RC_CT_INCLUDED
+    p = hci_control_misc_append_sep(p, end, &first_profile);
+    p = hci_control_misc_append_text(p, end, "AVRCP_CT");
+#endif
+#ifdef WICED_APP_AUDIO_RC_TG_INCLUDED
+    p = hci_control_misc_append_sep(p, end, &first_profile);
+    p = hci_control_misc_append_text(p, end, "AVRCP_TG");
+#endif
+#ifdef WICED_APP_HFP_AG_INCLUDED
+    p = hci_control_misc_append_sep(p, end, &first_profile);
+    p = hci_control_misc_append_text(p, end, "HFP_AG");
+#endif
+#ifdef WICED_APP_HFP_HF_INCLUDED
+    p = hci_control_misc_append_sep(p, end, &first_profile);
+    p = hci_control_misc_append_text(p, end, "HFP_HF");
+#endif
+
+    p = hci_control_misc_append_text(p, end, " audio_role=");
+    p = hci_control_misc_append_audio_role(p, end, (uint8_t)wiced_bt_audio_buf_config.role, &first_role);
+    if (first_role)
+    {
+        p = hci_control_misc_append_text(p, end, "NONE");
+    }
+
+    *p = '\0';
+
+    wiced_transport_send_data(HCI_CONTROL_MISC_EVENT_PROFILE_SUMMARY,
+                              (uint8_t *)summary,
+                              (uint16_t)strlen(summary));
+}
+
+static void hci_control_misc_send_audio_diag(void)
+{
+    uint8_t payload[23] = { 0 };
+    uint32_t free_before = ag_audio_free_before;
+    uint32_t free_after = ag_audio_free_after;
+    uint32_t tx_size = wiced_bt_audio_buf_config.audio_tx_buffer_size;
+    uint32_t codec_size = wiced_bt_audio_buf_config.audio_codec_buffer_size;
+
+    if ((free_before == 0U) && (free_after == 0U))
+    {
+        free_before = wiced_memory_get_free_bytes();
+        free_after = free_before;
+    }
+
+    payload[0] = (uint8_t)wiced_bt_audio_buf_config.role;
+    payload[1] = ag_audio_init_result;
+    payload[2] = (uint8_t)(free_before & 0xFF);
+    payload[3] = (uint8_t)((free_before >> 8) & 0xFF);
+    payload[4] = (uint8_t)((free_before >> 16) & 0xFF);
+    payload[5] = (uint8_t)((free_before >> 24) & 0xFF);
+    payload[6] = (uint8_t)(free_after & 0xFF);
+    payload[7] = (uint8_t)((free_after >> 8) & 0xFF);
+    payload[8] = (uint8_t)((free_after >> 16) & 0xFF);
+    payload[9] = (uint8_t)((free_after >> 24) & 0xFF);
+    payload[14] = (uint8_t)(tx_size & 0xFF);
+    payload[15] = (uint8_t)((tx_size >> 8) & 0xFF);
+    payload[16] = (uint8_t)((tx_size >> 16) & 0xFF);
+    payload[17] = (uint8_t)((tx_size >> 24) & 0xFF);
+    payload[18] = (uint8_t)(codec_size & 0xFF);
+    payload[19] = (uint8_t)((codec_size >> 8) & 0xFF);
+    payload[20] = (uint8_t)((codec_size >> 16) & 0xFF);
+    payload[21] = (uint8_t)((codec_size >> 24) & 0xFF);
+    payload[22] = ag_startup_stage;
+
+    wiced_transport_send_data(HCI_CONTROL_MISC_EVENT_AG_AUDIO_INIT_DIAG, payload, sizeof(payload));
+}
+
+static char *hci_control_misc_append_text(char *dst, char *end, const char *text)
+{
+    while ((dst < end) && (*text != '\0'))
+    {
+        *dst++ = *text++;
+    }
+    return dst;
+}
+
+static char *hci_control_misc_append_sep(char *dst, char *end, uint8_t *first_item)
+{
+    if (!(*first_item))
+    {
+        dst = hci_control_misc_append_text(dst, end, "+");
+    }
+    else
+    {
+        *first_item = 0;
+    }
+    return dst;
+}
+
+static char *hci_control_misc_append_audio_role(char *dst, char *end, uint8_t role, uint8_t *first_item)
+{
+    if (role & WICED_AUDIO_SOURCE_ROLE)
+    {
+        dst = hci_control_misc_append_sep(dst, end, first_item);
+        dst = hci_control_misc_append_text(dst, end, "A2DP_SRC");
+    }
+    if (role & WICED_AUDIO_SINK_ROLE)
+    {
+        dst = hci_control_misc_append_sep(dst, end, first_item);
+        dst = hci_control_misc_append_text(dst, end, "A2DP_SINK");
+    }
+    if (role & WICED_HF_ROLE)
+    {
+        dst = hci_control_misc_append_sep(dst, end, first_item);
+        dst = hci_control_misc_append_text(dst, end, "HF");
+    }
+    return dst;
 }

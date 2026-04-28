@@ -92,7 +92,9 @@
 
 #define AV_SBC_MAX_BITPOOL          53
 
-#if defined(CYW43012C0) || defined(CYW20819A1)
+#if defined(CYW20706A2)
+#define AUDIO_TX_BUFFER_SIZE        0
+#elif defined(CYW43012C0) || defined(CYW20819A1)
 #define AUDIO_TX_BUFFER_SIZE        0x2000
 #else
 #define AUDIO_TX_BUFFER_SIZE        11000
@@ -101,6 +103,8 @@
 /* It needs 15K bytes for HFP(mSBC use mainly) */
 #if defined(WICED_APP_HFP_HF_INCLUDED)
 #define AUDIO_CODEC_BUFFER_SIZE     (16 * 1024) //0x4000
+#elif defined(CYW20706A2) && defined(WICED_APP_HFP_AG_INCLUDED)
+#define AUDIO_CODEC_BUFFER_SIZE     0x3000
 #elif defined(WICED_APP_HFP_AG_INCLUDED)
 #define AUDIO_BUF_SIZE_MAIN_HFP     (15 * 1024) //0x3C00
 #define AUDIO_CODEC_BUFFER_SIZE     AUDIO_BUF_SIZE_MAIN_HFP
@@ -123,7 +127,7 @@ const uint8_t pincode[WICED_PIN_CODE_LEN] = { 0x30, 0x30, 0x30, 0x30 };
 const wiced_bt_cfg_settings_t wiced_bt_cfg_settings =
 {
     .device_name                         = (uint8_t*)app_gap_device_name,                               /**< Local device name (NULL terminated). Use same as configurator generated string.*/
-    .device_class                        = {0x20, 0x04, 0x24},                                         /**< Local device class: Audio/Video, car audio */
+    .device_class                        = {0x20, 0x07, 0x04},                                         /**< Local device class */
     .security_requirement_mask           = (  BTM_SEC_IN_AUTHENTICATE | BTM_SEC_OUT_AUTHENTICATE | BTM_SEC_ENCRYPT ), /**< Security requirements mask (BTM_SEC_NONE, or combinination of BTM_SEC_IN_AUTHENTICATE, BTM_SEC_OUT_AUTHENTICATE, BTM_SEC_ENCRYPT (see #wiced_bt_sec_level_e)) */
 
     .max_simultaneous_links              = 3,                                                          /**< Maximum number simultaneous links to different devices */

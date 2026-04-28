@@ -49,37 +49,12 @@ static void app_avrc_settings_cmd(void);
 #ifdef CATEGORY_2_PASSTROUGH
 extern wiced_result_t wiced_bt_avrc_tg_button_press ( uint8_t label, uint8_t state, uint8_t op_id );
 #endif // CATEGORY_2_PASSTROUGH
-extern void wiced_bt_avrc_tg_register_for_notification( uint8_t event_id );
 typedef struct
 {
     wiced_bool_t connected;
 } hci_control_rc_target_cb_t;
 
 static hci_control_rc_target_cb_t hci_control_rc_target_cb;
-static wiced_bt_avrc_tg_play_status_t app_avrc_last_status = { AVRC_PLAYSTATE_STOPPED, 255000, 0 };
-
-static void app_avrc_register_common_notifications(void)
-{
-    /* Prime the common AVRCP notifications many car head units care about. */
-    wiced_bt_avrc_tg_register_for_notification(AVRC_EVT_PLAY_STATUS_CHANGE);
-    wiced_bt_avrc_tg_register_for_notification(AVRC_EVT_TRACK_CHANGE);
-#ifdef APP_AVRC_SETTING_CHANGE_SUPPORTED
-    wiced_bt_avrc_tg_register_for_notification(AVRC_EVT_APP_SETTING_CHANGE);
-#endif
-    wiced_bt_avrc_tg_register_for_notification(AVRC_EVT_VOLUME_CHANGE);
-}
-
-static void app_avrc_update_play_state_only(uint8_t play_state, wiced_bool_t reset_position)
-{
-    app_avrc_last_status.play_state = play_state;
-
-    if (reset_position)
-    {
-        app_avrc_last_status.song_pos = 0;
-    }
-
-    wiced_bt_rc_set_player_status(&app_avrc_last_status);
-}
 
 /*
  * AVRC init
@@ -105,7 +80,6 @@ void app_avrc_device_connected(wiced_bt_device_address_t bd_addr, uint16_t handl
     uint8_t event_data[BD_ADDR_LEN + sizeof(handle) ];
 
     hci_control_rc_target_cb.connected = WICED_TRUE;
-    app_avrc_last_status.song_pos = 0;
 
     WICED_BT_TRACE( "[%s] %B status %x handle %x\n", __FUNCTION__, bd_addr, handle );
 
@@ -129,8 +103,6 @@ void app_avrc_device_disconnected(uint16_t handle)
     WICED_BT_TRACE( "[%s] handle %x\n", __FUNCTION__, handle );
 
     hci_control_rc_target_cb.connected = WICED_FALSE;
-    app_avrc_last_status.play_state = AVRC_PLAYSTATE_STOPPED;
-    app_avrc_last_status.song_pos = 0;
 
     event_data[0] = handle & 0xff;                        /* handle */
     event_data[1]   = ( handle >> 8 ) & 0xff;
@@ -305,7 +277,6 @@ void app_avrc_player_status_cmd(uint8_t *p_data, uint16_t payload_len)
 
     WICED_BT_TRACE( "[%s]: state %d, len %d, pos %d\n\r", __FUNCTION__, play_status.play_state, play_status.song_len, play_status.song_pos);
 
-    app_avrc_last_status = play_status;
     wiced_bt_rc_set_player_status(&play_status);
 }
 #endif
@@ -377,11 +348,6 @@ uint8_t hci_control_avrc_handle_command( uint16_t cmd_opcode, uint8_t *p_data, u
 
         case HCI_CONTROL_AVRC_TARGET_COMMAND_DISCONNECT:             /* Disconnect a connection to the peer. */
             status = avrc_app_tg_hci_disconnect_connection() == WICED_SUCCESS ? HCI_CONTROL_STATUS_SUCCESS : HCI_CONTROL_STATUS_FAILED;
-            break;
-
-        case HCI_CONTROL_AVRC_TARGET_COMMAND_REGISTER_NOTIFICATION:
-            app_avrc_register_common_notifications();
-            wiced_bt_rc_track_changed();
             break;
 
 #ifdef APP_AVRC_TRACK_INFO_SUPPORTED
@@ -465,15 +431,12 @@ static void hci_control_rc_target_passthrough_cmd_event(wiced_bt_avrc_tg_passthr
     switch(p_passthrough->command)
     {
     case APP_AVRC_EVENT_PASSTHROUGH_CMD_PLAY:
-        app_avrc_update_play_state_only(AVRC_PLAYSTATE_PLAYING, WICED_FALSE);
         wiced_evt_opcode = HCI_CONTROL_AVRC_TARGET_EVENT_PLAY;
         break;
     case APP_AVRC_EVENT_PASSTHROUGH_CMD_PAUSE:
-        app_avrc_update_play_state_only(AVRC_PLAYSTATE_PAUSED, WICED_FALSE);
         wiced_evt_opcode = HCI_CONTROL_AVRC_TARGET_EVENT_PAUSE;
         break;
     case APP_AVRC_EVENT_PASSTHROUGH_CMD_STOP:
-        app_avrc_update_play_state_only(AVRC_PLAYSTATE_STOPPED, WICED_TRUE);
         wiced_evt_opcode = HCI_CONTROL_AVRC_TARGET_EVENT_STOP;
         break;
     case APP_AVRC_EVENT_PASSTHROUGH_CMD_NEXT_TRACK:
@@ -505,9 +468,7 @@ void app_avrc_event_cback(uint8_t event_id,  wiced_bt_rc_event_t *p_event)
     {
     case APP_AVRC_EVENT_DEVICE_CONNECTED:
         {
-            app_avrc_register_common_notifications();
             wiced_bt_avrc_tg_register_absolute_volume_change();
-            wiced_bt_rc_track_changed();
 
             /* peer device connected, send info to MCU app */
             app_avrc_device_connected(p_event->bd_addr, p_event->handle);
@@ -517,6 +478,15 @@ void app_avrc_event_cback(uint8_t event_id,  wiced_bt_rc_event_t *p_event)
     case APP_AVRC_EVENT_DEVICE_DISCONNECTED:
         /* peer device disconnected, send info to MCU app */
         app_avrc_device_disconnected(p_event->handle);
+
+#ifdef WICED_APP_AUDIO_ROLE_SERVICE_SWITCH_WITH_SNK
+        /* switch to CONTROLLER role */
+        if (!hci_control_audio_is_connected())
+        {
+            /* only if no A2DP_SRC link is connected */
+            hci_control_switch_avrcp_role(AVRCP_CONTROLLER_ROLE);
+        }
+#endif
         break;
 
 #ifdef APP_AVRC_SETTING_CHANGE_SUPPORTED

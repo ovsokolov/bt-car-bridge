@@ -12,6 +12,46 @@ Build a two-board Bluetooth bridge on `CYBT-343026-EVAL` kits where:
 
 This is not a raw Bluetooth packet tunnel.
 
+## Current Resume Point - 2026-04-28
+
+Both copied baseline projects now boot on `CYBT-343026-EVAL` and are visible through `control_uart_ui` at `921600`.
+
+Confirmed HF side:
+
+- active base: `Audio_Headset_Standalone`
+- identity: `NavTool-PhoneConnect-HFTEST6-S3-AI00`
+- local BDA observed: `20:70:6A:20:D3:3F`
+- profiles observed: `LE+A2DP_SINK+AVRCP_CT+AVRCP_TG+HFP_HF`
+- audio buffer role observed: `A2DP_SINK|HF`, role byte `0x0C`
+- PUART heartbeat was visible before Phase 1.3 changes
+
+Confirmed AG side:
+
+- active base: local `Audio_Watch`
+- identity: `NavTool-CarConnect-AGTEST1-S3-AI00`
+- local BDA observed: `20:70:6A:20:D3:40`
+- profiles observed: `LE+A2DP_SRC+AVRCP_CT+AVRCP_TG+HFP_AG`
+- audio buffer role observed: `A2DP_SRC`, role byte `0x02`
+- `CYW20706A2` SDK does not define an AG audio-buffer role bit
+- PUART heartbeat and HCI heartbeat were visible before Phase 1.3 changes
+
+Current Phase 1.3 code staged:
+
+- HF transmits `BR1,HELLO,HF\r\n` on PUART once per second
+- AG transmits `BR1,HELLO,AG\r\n` on PUART once per second
+- both boards enable PUART RX and parse bounded line-oriented input
+- both boards mirror bridge TX/RX lines to HCI event `0xFF25`
+- `control_uart_ui` decodes `0xFF25` as `Bridge PUART ...`
+- debug trace is no longer intentionally routed to PUART on these Phase 1.3 paths
+
+Next lab test:
+
+- rebuild and flash HF and AG
+- first verify each board still reports identity/audio init over HCI
+- watch HCI logs for `Bridge PUART TX:BR1,HELLO,<role>`
+- wire HF PUART TX to AG PUART RX and AG PUART TX to HF PUART RX, with common ground
+- watch for `Bridge PUART RX:BR1,HELLO,<peer-role>` on each HCI port
+
 The intended design is:
 
 - HF receives real phone-side HFP events
@@ -111,6 +151,127 @@ Important distinction:
 
 - PUART debug text configuration is not the same as HCI transport configuration
 - changing debug route or PUART baud does not automatically change HCI control transport baud
+
+## Recent Debug Findings
+
+The recent HF-side PUART investigation produced one important result that should guide the next session:
+
+- HF debug images were stamped with identity markers like `HFTEST1`, `HFTEST2`, `HFTEST3`, `HFTEST4`
+- to locate the exact failing startup boundary, startup stage markers were added as an identity suffix:
+  - `-S1` = reached after `hci_control_init()`
+  - `-S2` = reached after `app_stack_init()`
+  - `-S3` = reached after `wiced_audio_buffer_initialize(...)`
+
+Observed result:
+
+- HCI log showed `NavTool-PhoneConnect-HFTEST4-S2`
+
+Interpretation:
+
+- HF startup gets past `hci_control_init()`
+- HF startup gets past `app_stack_init()`
+- HF startup does not reach the post-`wiced_audio_buffer_initialize(...)` stage
+
+Practical implication:
+
+- the immediate blocker is most likely at or before `wiced_audio_buffer_initialize(...)`
+- this means the lack of PUART heartbeat, missing raw PUART text, missing LED/timer activity, and missing later-stage debug markers should not currently be blamed on PUART wiring first
+- next debugging should focus on why HF does not progress beyond audio buffer initialization
+
+Notes from the same investigation:
+
+- BSP/platform packages consistently map eval-board PUART as:
+  - `TX = P31`
+  - `RX = P04`
+- the board/platform package mismatch theory is currently weak
+- the more useful current theory is startup abort before later debug/test hooks become active
+
+## Debug Process
+
+Use the debugging workflow below for every future lab session.
+
+Rules:
+
+- record every meaningful test in the running debug log
+- do not rely on memory or chat history as the primary source of truth
+- every test entry must include both:
+  - what was changed
+  - what was observed
+- every test must end with an explicit result:
+  - `PASS`
+  - `FAIL`
+  - `INCONCLUSIVE`
+- if a test changes the firmware image, update the visible identity marker so the flashed image can be proven from HCI
+- if a test is intended to isolate a failure boundary, encode the boundary into a host-visible path when possible
+  - preferred order:
+    - identity/version-visible markers
+    - HCI events
+    - LED/GPIO proof
+    - raw UART/PUART text
+
+Recommended debugging order:
+
+1. Prove the exact image on the board
+2. Prove the exact startup stage reached
+3. Prove whether the callback / timer / state transition executes
+4. Only then prove transport visibility on PUART or other side channels
+
+Do not skip recording:
+
+- COM port used
+- baud rate used
+- flashed identity marker
+- exact observed log lines
+- whether the result changed the active theory
+
+## Debug Record Keeping
+
+Use a dedicated running markdown log for tests:
+
+- [dual_chip_hfp_bridge_debug_log.md](C:\BT_Projects\control_uart_ui\dual_chip_hfp_bridge_debug_log.md)
+
+Expected usage:
+
+- append a new test entry after each meaningful debug run
+- do not overwrite previous conclusions unless a later test disproves them
+- if a conclusion is disproved, mark the old one as superseded rather than silently replacing it
+
+Minimum fields for each entry:
+
+- test id
+- date/time
+- phase / topic
+- target board(s)
+- firmware identity expected
+- files changed
+- exact procedure
+- expected result
+- actual result
+- status: `PASS` / `FAIL` / `INCONCLUSIVE`
+- conclusion
+- next step
+
+## Current Debug Focus
+
+Current highest-value HF finding:
+
+- `NavTool-PhoneConnect-HFTEST4-S2`
+
+Current interpretation:
+
+- HF reaches `hci_control_init()`
+- HF reaches `app_stack_init()`
+- HF does not reach the post-`wiced_audio_buffer_initialize(...)` stage
+
+Therefore, the current main debugging focus should be:
+
+- debug failure at or before `wiced_audio_buffer_initialize(...)`
+
+and not primarily:
+
+- PUART electrical routing
+- BTSpy behavior
+- raw bridge protocol logic
 
 ## Recommended Bridge Protocol Direction
 
@@ -415,6 +576,8 @@ Recommended steps:
 Current status:
 
 - Phase 1.1 completed: both UART firmware repos now keep debug on the host-side path instead of forcing `PUART`
+- Phase 1.2 completed: bridge protocol and PUART skeleton files are added on HF and AG, with PUART initialization moved into `hci_control_post_init()`
+- Phase 1.3 paused: `HELLO` transmit logic remains in source, but active bridge startup hooks were removed again until HF HCI bring-up is stable and exposed PUART routing is verified on the devkits
 
 ### Phase 2: Inbound Call Path
 
@@ -603,6 +766,11 @@ Useful early ideas:
 - keep protocol human-readable until real throughput or robustness data says otherwise
 - keep HFP and AVRCP as separate bridge domains sharing one framing layer
 - include a profile field in future framing if message volume grows, for example `BR1,HFP,...` and `BR1,AVRCP,...`
+- while the boards are not physically cross-wired, use the UI PUART Trace tab as the software patch cable:
+  - Phone PUART `BR1,...` lines relay to Car PUART
+  - Car PUART `BR1,...` lines relay to Phone PUART
+  - manual `Peer Hello` buttons send `BR1,HELLO,AG` into Phone PUART and `BR1,HELLO,HF` into Car PUART
+- current lab rule: the UI is the active PUART relay until explicitly switching to physical crosswire
 
 ## Commit Naming Convention
 
@@ -647,7 +815,7 @@ Preferred commit body structure when needed:
 - AIROC BTSDK docs index: https://infineon.github.io/btsdk-docs/BT-SDK/index.html
 - AIROC HCI UART Control Protocol: https://infineon.github.io/btsdk-docs/BT-SDK/AIROC-HCI-Control-Protocol.pdf
 - CYW20706 `hci_control_api.h` reference: https://infineon.github.io/btsdk-docs/BT-SDK/20706-A2_Bluetooth/API/hci__control__api_8h.html
-- PUART driver docs: https://infineon.github.io/btsdk-docs/BT-SDK/20706-A2_Bluetooth/API/modules.html
+- CYW20706 PUART driver docs: https://infineon.github.io/btsdk-docs/BT-SDK/20706-A2_Bluetooth/API/group___p_u_a_r_t_driver.html
 - Trace utilities docs: https://infineon.github.io/btsdk-docs/BT-SDK/20706-A2_Bluetooth/API/group__wiced__utils.html
 - Transport docs: https://infineon.github.io/btsdk-docs/BT-SDK/20706-A2_Bluetooth/API/group___transport.html
 - Audio utilities docs: https://infineon.github.io/btsdk-docs/BT-SDK/20706-A2_Bluetooth/API/group__wicedbt__audio__utils.html

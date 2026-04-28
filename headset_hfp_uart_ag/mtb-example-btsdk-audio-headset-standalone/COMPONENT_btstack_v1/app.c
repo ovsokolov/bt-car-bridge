@@ -46,17 +46,15 @@
 #include "app.h"
 #include "cycfg_gatt_db.h"
 #include "hci_control_rc_controller.h"
-#include "wiced_hal_nvram.h"
 
+/******************************************************
+ *               defines
+ ******************************************************/
 #if defined(WICED_HCI_BAUDRATE)
 #define APP_TRANSPORT_HCI_BAUD WICED_HCI_BAUDRATE
 #else
 #define APP_TRANSPORT_HCI_BAUD HCI_UART_DEFAULT_BAUD
 #endif
-
-/******************************************************
- *               defines
- ******************************************************/
 #ifdef CYW20819A1
 #define WICED_TRANSPORT_BUFFER_COUNT    1
 #else
@@ -144,7 +142,7 @@ const wiced_transport_cfg_t transport_cfg =
         .uart_cfg =
         {
             .mode = WICED_TRANSPORT_UART_HCI_MODE,
-            .baud_rate = APP_TRANSPORT_HCI_BAUD
+            .baud_rate =  APP_TRANSPORT_HCI_BAUD
         },
     },
     .rx_buff_pool_cfg =
@@ -172,7 +170,7 @@ wiced_bt_ble_advert_elem_t cy_bt_adv_packet_data[CY_BT_ADV_PACKET_DATA_SIZE] =
     /* Complete local name */
     {
         .advert_type = BTM_BLE_ADVERT_TYPE_NAME_COMPLETE,
-        .len = MAX_LEN_GAP_DEVICE_NAME,
+        .len = 5,           // app_gap_device_name_len,
         .p_data = ( uint8_t* )app_gap_device_name,
     },
 };
@@ -242,7 +240,6 @@ int app_write_nvram( int nvram_id, int data_len, void *p_data, wiced_bool_t from
     uint8_t                   *p = tx_buf;
     hci_control_nvram_chunk_t *p1;
     wiced_result_t            result;
-    wiced_result_t            nvram_status;
 
     /* first check if this ID is being reused and release the memory chunk */
     hci_control_delete_nvram( nvram_id, WICED_FALSE );
@@ -269,12 +266,6 @@ int app_write_nvram( int nvram_id, int data_len, void *p_data, wiced_bool_t from
     memcpy( p1->data, p_data, data_len );
 
     p_nvram_first = p1;
-
-    if ( ( nvram_id >= WICED_NVRAM_VSID_START ) && ( nvram_id <= WICED_NVRAM_VSID_END ) )
-    {
-        uint8_t bytes_written = wiced_hal_write_nvram( ( uint8_t )nvram_id, ( uint8_t )data_len, ( uint8_t * )p_data, &nvram_status );
-        WICED_BT_TRACE( "Persisted NVRAM id:%d bytes:%d status:%d\n", nvram_id, bytes_written, nvram_status );
-    }
 
     wiced_bt_device_link_keys_t * p_keys = ( wiced_bt_device_link_keys_t *) p_data;
 #ifdef CYW20706A2

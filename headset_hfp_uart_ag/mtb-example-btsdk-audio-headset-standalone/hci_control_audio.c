@@ -1001,14 +1001,8 @@ static void av_app_disconnect_event_hdlr( uint8_t handle, BD_ADDR bd_addr, uint8
  */
 static void av_app_open_confirm_event_hdlr(uint8_t handle, BD_ADDR bd_addr, uint8_t event, wiced_bt_avdt_ctrl_t *p_data)
 {
-    WICED_BT_TRACE("[A2DP] %s peer:%B handle:%d err:%d lcid:%d peer_mtu:%d reconfig:%d\n",
-                   __FUNCTION__,
-                   bd_addr,
-                   handle,
-                   p_data->open_cfm.hdr.err_code,
-                   p_data->open_cfm.lcid,
-                   p_data->open_cfm.peer_mtu,
-                   av_app_cb.reconfigure);
+    WICED_BT_TRACE( "[%s]: <%B> handle: %d error_code: %d\n\r", __FUNCTION__,
+                    bd_addr, handle, p_data->open_cfm.hdr.err_code);
 
     if (AVDT_SUCCESS == p_data->open_cfm.hdr.err_code)
     {
@@ -1344,9 +1338,6 @@ static void av_app_proc_stream_evt( uint8_t handle, BD_ADDR bd_addr, uint8_t eve
     case AVDT_CONNECT_IND_EVT:
         if (p_data->connect_ind.err_code == AVDT_SUCCESS)
         {
-            WICED_BT_TRACE("[A2DP] Remote AVDTP connect indication peer:%B state:%s\n",
-                           bd_addr,
-                           dump_state_name(av_app_cb.state));
             /* If the connect indication comes through here, the connect is initiated from the remote */
             av_app_cb.is_accepter = WICED_TRUE;
 
@@ -1454,11 +1445,7 @@ static wiced_result_t av_app_create_connection(void)
 {
     uint16_t avdt_status;
 
-    WICED_BT_TRACE("[A2DP] %s peer:%B sec_mask:0x%04x state:%s\n",
-                   __FUNCTION__,
-                   av_app_cb.peer_bda,
-                   av_app_cb.avdt_register.sec_mask,
-                   dump_state_name(av_app_cb.state));
+    WICED_BT_TRACE( "[%s] \n\r", __FUNCTION__ );
 
     av_app_cb.is_accepter = WICED_FALSE;
 
@@ -1976,12 +1963,6 @@ void av_app_sdp_cback( uint16_t sdp_result )
     wiced_bt_sdp_discovery_record_t *p_rec = NULL;
     wiced_bt_sdp_protocol_elem_t     elem;
 
-    WICED_BT_TRACE("[A2DP] SDP callback peer:%B result:%u state:%s accepter:%d\n",
-                   av_app_cb.peer_bda,
-                   sdp_result,
-                   dump_state_name(av_app_cb.state),
-                   av_app_cb.is_accepter);
-
     if ( sdp_result == WICED_BT_SDP_SUCCESS )
     {
         // Search Sink record and find AVDTP version
@@ -1996,9 +1977,7 @@ void av_app_sdp_cback( uint16_t sdp_result )
                 av_app_cb.state = AV_STATE_SDP_DONE;
 
                 av_app_cb.peer_avdt_version = elem.params[0];
-                WICED_BT_TRACE("[A2DP] Remote sink SDP found peer:%B avdt_version:0x%x\n",
-                               av_app_cb.peer_bda,
-                               av_app_cb.peer_avdt_version);
+                WICED_BT_TRACE( "Service is found in the remote device %x\n\r", av_app_cb.peer_avdt_version );
             }
         }
     }
@@ -2032,11 +2011,6 @@ void av_app_sdp_cback( uint16_t sdp_result )
 
     if ( WICED_SUCCESS != status )
     {
-        WICED_BT_TRACE("[A2DP] SDP/connect sequence ended without success peer:%B status:%d accepter:%d state:%s\n",
-                       av_app_cb.peer_bda,
-                       status,
-                       av_app_cb.is_accepter,
-                       dump_state_name(av_app_cb.state));
         if (av_app_cb.is_accepter == WICED_FALSE)
         {
              av_app_cb.state = AV_STATE_IDLE;
@@ -2072,11 +2046,7 @@ wiced_result_t av_app_initiate_sdp( BD_ADDR bda )
         }
     }
 
-    WICED_BT_TRACE("[A2DP] Start SDP for peer:%B db:%x state:%s accepter:%d\n",
-                   av_app_cb.peer_bda,
-                   (uint32_t)av_app_cb.p_sdp_db,
-                   dump_state_name(av_app_cb.state),
-                   av_app_cb.is_accepter);
+    WICED_BT_TRACE( "av_app_initiate_sdp %x\n\r", (uint32_t)av_app_cb.p_sdp_db );
 
     uuid_list.len       = LEN_UUID_16;
     uuid_list.uu.uuid16 = UUID_SERVCLASS_AUDIO_SINK;
@@ -2091,17 +2061,16 @@ wiced_result_t av_app_initiate_sdp( BD_ADDR bda )
         if ( wiced_bt_sdp_service_search_attribute_request( av_app_cb.peer_bda, av_app_cb.p_sdp_db, av_app_sdp_cback) )
         {
             av_app_cb.state = AV_STATE_SDP_IN_PROGRESS;
-            WICED_BT_TRACE("[A2DP] SDP request queued for peer:%B\n", av_app_cb.peer_bda);
             return WICED_SUCCESS;
         }
         else
         {
-            WICED_BT_TRACE("[A2DP] SDP request failed to queue for peer:%B\n", av_app_cb.peer_bda);
+            WICED_BT_TRACE("[%s] wiced_bt_sdp_service_search_attribute_request fail \n", __func__);
         }
     }
     else
     {
-        WICED_BT_TRACE("[A2DP] SDP discovery DB init failed for peer:%B\n", av_app_cb.peer_bda);
+        WICED_BT_TRACE("[%s] wiced_bt_sdp_init_discovery_db fail \n", __func__);
     }
 
     wiced_bt_free_buffer(av_app_cb.p_sdp_db);
@@ -2131,12 +2100,8 @@ wiced_result_t a2dp_app_hci_control_connect(uint8_t* p_data, uint32_t len)
         /* store routing parameter */
         av_app_cb.audio_route = *p_data;
 
-        WICED_BT_TRACE("[A2DP] Host connect request peer:%B route:%d sample_rate:%d chcfg:%d state:%s\n",
-                       bd_addr,
-                       av_app_cb.audio_route,
-                       av_app_cb.audio_sf,
-                       av_app_cb.audio_chcfg,
-                       dump_state_name(av_app_cb.state));
+        WICED_BT_TRACE( "[%s]: <%B> Route: %d, Sample Rate: %d, Channel Config: %d, \n",
+                __FUNCTION__, bd_addr, av_app_cb.audio_route, av_app_cb.audio_sf, av_app_cb.audio_chcfg );
 
         status = av_app_initiate_sdp(bd_addr);
     }

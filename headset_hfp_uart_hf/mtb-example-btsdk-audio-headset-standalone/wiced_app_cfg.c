@@ -191,7 +191,7 @@ uint8_t bt_avrc_ct_supported_events[] =
 /*****************************************************************************
  * wiced_bt core stack configuration
  ****************************************************************************/
-#define WICED_DEVICE_NAME                       "NavTool-PhoneConnect"
+#define WICED_DEVICE_NAME                       "Headset"
 
 #if BTSTACK_VER >= 0x03000001
 /* LE SCAN Setting */

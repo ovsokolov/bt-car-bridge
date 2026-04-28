@@ -30,9 +30,11 @@
 # of such system or application assumes all risk of such use and in doing
 # so agrees to indemnify Cypress against all liability.
 #
+
 ifeq ($(WHICHFILE),true)
 $(info Processing $(lastword $(MAKEFILE_LIST)))
 endif
+
 #
 # Basic Configuration
 #
@@ -45,21 +47,12 @@ VERBOSE=
 TARGET=CYBT-343026-EVAL
 
 SUPPORTED_TARGETS = \
-  CYW920819EVB-02 \
-  CYW920819M2EVB-01 \
-  CYW920820EVB-02 \
-  CYW920719B2Q40EVB-01 \
-  CYW920706WCDEVAL \
-  CYBT-343026-EVAL \
-  CYBT-353027-EVAL \
-  CYW9M2BASE-43012BT \
   CYW920721M2EVK-01 \
   CYW920721M2EVK-02 \
-  CYW943012BTEVK-01 \
-  CYW955572BTEVK-01 \
   CYW920721M2EVB-03 \
-  CYW920820M2EVB-01 \
-  CYW943022BTEVK-01
+  CYW920706WCDEVAL \
+  CYBT-343026-EVAL \
+  CYBT-353027-EVAL
 
 #
 # Advanced Configuration
@@ -77,303 +70,105 @@ LINKER_SCRIPT=
 PREBUILD=
 POSTBUILD=
 FEATURES=
-CY_IGNORE= \
-  headset_button.c \
-  headset_control.c \
-  headset_control.h \
-  headset_control_le.c \
-  headset_control_le.h \
-  headset_nvram.h \
-  wiced_app_cfg.c
 
 #
 # App features/defaults
 #
-OTA_FW_UPGRADE?=0
 BT_DEVICE_ADDRESS?=default
 UART?=AUTO
 XIP?=xip
 TRANSPORT?=UART
-
-# Legacy build flag name retained to match upstream app logic.
-# In this HF workspace the resulting runtime role is still A2DP sink.
-A2DP_SRC_INCLUDED := 1
-AVRCP_TG_INCLUDED := 1
-AVRCP_CT_INCLUDED := 1
-HFP_AG_INCLUDED := 0
-HFP_HF_INCLUDED := 1
-HCI_TEST_INCLUDED := 1
-LE_INCLUDED := 1
-ANCS_INCLUDED ?= 1
-AMS_INCLUDED ?= 1
-PANU_SUPPORT=0
-PANNAP_SUPPORT=0
-PAN_PTS_SUPPORT=0
-AUDIO_SHIELD_20721M2EVB_03_INCLUDED?=0
-
-# PAN only supported on CYW920721M2EVK-01 currently
-ifeq (1,$(filter 1,$(PANU_SUPPORT) $(PANNAP_SUPPORT) $(PAN_PTS_SUPPORT)))
-ifneq ($(TARGET),CYW920721M2EVK-01)
-$(error PANU_INCLUDED PANNAP_INCLUDED and PAN_PTS_SUPPORT only supported on CYW920721M2EVK-01 TARGET)
-endif
-endif
-
-ifeq ($(PAN_PTS_SUPPORT), 1)
-PAN_PTS_INCLUDED := 1
-endif
-ifeq ($(PANU_SUPPORT), 1)
-PANU_INCLUDED := 1
-endif
-ifeq ($(PANNAP_SUPPORT), 1)
-PANNAP_INCLUDED := 1
-endif
-ifeq ($(PANU_INCLUDED), 1)
-ifeq ($(PANNAP_INCLUDED), 1)
-$(error PANU_INCLUDED PANNAP_INCLUDED can't enable at the same time)
-endif
-endif
-
-AMA_INCLUDED := 0
-MP3_DECODER_INCLUDED ?= 1
-ENABLE_DEBUG?=0
-
-SLEEP_SUPPORT ?= 0
-COEX_SUPPORT ?= 0
-AUTO_ELNA_SWITCH ?= 0
+FASTPAIR_ENABLE?=1
+AUTO_ELNA_SWITCH?=0
 AUTO_EPA_SWITCH ?= 0
-
+ENABLE_DEBUG?=0
 AUDIO_SHIELD_20721M2EVB_03_INCLUDED?=0
+EFLASH_SUPPORT?=1
 
 -include internal.mk
-
-ifeq ($(TARGET),CYW920721M2EVB-03)
-AUDIO_SHIELD_20721M2EVB_03_INCLUDED=1
-endif
-
-ifeq ($(TARGET),$(filter $(TARGET), CYW920719B2Q40EVB-01))
-HFP_AG_INCLUDED = 0
-endif
-
-ifeq ($(TARGET),$(filter $(TARGET), CYW920706WCDEVAL CYBT-343026-EVAL CYBT-353027-EVAL))
-ifeq ($(HFP_AG_INCLUDED),1)
-HFP_HF_INCLUDED = 0
-else
-HFP_AG_INCLUDED = 0
-HFP_HF_INCLUDED = 1
-endif
-endif
-
-ifeq ($(TARGET),$(filter $(TARGET), CYW920721M2EVK-01 CYW920721M2EVK-02 CYW920721M2EVB-03 CYW9M2BASE-43012BT CYW943012BTEVK-01))
-ifeq ($(HFP_AG_INCLUDED),1)
-HFP_HF_INCLUDED = 0
-else
-HFP_AG_INCLUDED = 0
-HFP_HF_INCLUDED = 1
-endif
-endif
-
-# Use deterministic per-role BD_ADDR defaults when caller does not provide one.
-# Format must be 12 hex digits without separators.
-ifeq ($(BT_DEVICE_ADDRESS),default)
-ifeq ($(HFP_AG_INCLUDED),1)
-BT_DEVICE_ADDRESS := 20706A20D340
-else
-BT_DEVICE_ADDRESS := 20706A20D341
-endif
-endif
-
-ifeq ($(PAN_PTS_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_PAN_PTS_INCLUDED
-endif
-ifeq ($(PANU_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_PANU_INCLUDED
-endif
-ifeq ($(PANNAP_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_PANNAP_INCLUDED
-endif
 
 # wait for SWD attach
 ifeq ($(ENABLE_DEBUG),1)
 CY_APP_DEFINES+=-DENABLE_DEBUG=1
 endif
 
+# standard baselib prebuilt libs
+CY_APP_DEFINES += -DAVRC_ADV_CTRL_INCLUDED
+CY_APP_DEFINES += -DAVRC_METADATA_INCLUDED
+CY_APP_DEFINES += -DFASTPAIR_ACCOUNT_KEY_NUM=5
+CY_APP_DEFINES += -DNREC_ENABLE
+CY_APP_DEFINES += -DWICED_A2DP_EXT_CODEC=0
+CY_APP_DEFINES += -DWICED_APP_LE_INCLUDED=TRUE
+CY_APP_DEFINES += -DWICED_BT_A2DP_SINK_MAX_NUM_CODECS=1
+CY_APP_DEFINES += -DBT_HS_SPK_CONTROL_BR_EDR_MAX_CONNECTIONS=1
+CY_APP_DEFINES += -DWICED_BT_HFP_HF_MAX_CONN=BT_HS_SPK_CONTROL_BR_EDR_MAX_CONNECTIONS
+CY_APP_DEFINES += -DWICED_BT_A2DP_SINK_MAX_NUM_CONN=BT_HS_SPK_CONTROL_BR_EDR_MAX_CONNECTIONS
+CY_APP_DEFINES += -DMAX_CONNECTED_RCC_DEVICES=BT_HS_SPK_CONTROL_BR_EDR_MAX_CONNECTIONS
+CY_APP_DEFINES += -DWICED_BT_TRACE_ENABLE
+CY_APP_DEFINES += -DHCI_TRACE_OVER_TRANSPORT
 
 # For devices that are memory constrained and can process CY_DISABLE_TRACE_PATH
 # in the device CSP library in make/recipe/defines.mk:
 # list paths with source files we would like to build without WICED_BT_TRACE_ENABLE.
 CY_DISABLE_TRACE_PATH =$(SEARCH_btsdk-audio)
-CY_DISABLE_TRACE_PATH+=$(SEARCH_btsdk-ota)
-CY_DISABLE_TRACE_PATH+=$(SEARCH_btsdk-pan)
 CY_DISABLE_TRACE_PATH+=$(SEARCH_btsdk-common)
-CY_DISABLE_TRACE_PATH+=$(SEARCH_43012C0)
 
-CY_APP_DEFINES += -DWICED_BT_TRACE_ENABLE
-CY_APP_DEFINES += -DWICED_HCI_TRANSPORT_SPI=2
-CY_APP_DEFINES += -DWICED_HCI_TRANSPORT_UART=1
-CY_APP_DEFINES += -DSLEEP_SUPPORTED=$(SLEEP_SUPPORT)
-CY_APP_DEFINES += -DCOEX_SUPPORTED=$(COEX_SUPPORT)
-#CY_APP_DEFINES += -DPTS_TEST_ONLY
-ifeq ($(TRANSPORT),SPI)
-#$(info Transport=SPI)
-ifeq ($(TARGET),$(filter $(TARGET), CYW920719B2Q40EVB-01))
-CY_APP_DEFINES += -DWICED_HCI_TRANSPORT=2
+ifeq ($(TARGET),$(filter $(TARGET), CYW920706WCDEVAL CYBT-343026-EVAL CYBT-353027-EVAL))
+DEFAULT_LINK_KEY_COUNT = 1    # 20706 only support 0x7F numbers of NVRAM ID
+FASTPAIR_ENABLE = 0
+endif
+
+ifdef DEFAULT_LINK_KEY_COUNT
+CY_APP_DEFINES += -DBT_HS_SPK_CONTROL_LINK_KEY_COUNT=$(DEFAULT_LINK_KEY_COUNT)
 else
-$(error invalid TARGET for SPI transport, supported only for CYW920719B2Q40EVB-01)
-endif
-else
-#$(info Transport=UART)
-CY_APP_DEFINES += -DWICED_HCI_TRANSPORT=1
-endif # TRANSPORT
-
-ifeq ($(A2DP_SRC_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_AUDIO_SRC_INCLUDED
+CY_APP_DEFINES += -DBT_HS_SPK_CONTROL_LINK_KEY_COUNT=8
 endif
 
-ifeq ($(AVRCP_TG_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_AUDIO_RC_TG_INCLUDED
-CY_APP_DEFINES += -DCATEGORY_2_PASSTROUGH
+# Options for Power Consumption Measurement
+ifeq ($(CYPRESS_LOWPOWER_MODE), 1)
+FASTPAIR_ENABLE = 0
+CY_APP_DEFINES += -DLOW_POWER_MEASURE_MODE
 endif
 
-ifeq ($(AVRCP_CT_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_AUDIO_RC_CT_INCLUDED
-CY_APP_DEFINES += -DMAX_CONNECTED_RCC_DEVICES=1
-endif
-
-ifeq ($(HFP_AG_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_HFP_AG_INCLUDED
-endif
-
-ifeq ($(HFP_HF_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_HFP_HF_INCLUDED
-endif
-
-ifeq ($(LE_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_LE_INCLUDED
-CY_APP_DEFINES += -DWICED_APP_LE_PERIPHERAL_CLIENT_INCLUDED
-endif
-
-ifeq ($(ANCS_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_ANCS_INCLUDED
-endif
-
-ifeq ($(AMS_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_AMS_INCLUDED
-endif
-
-ifeq ($(AMA_INCLUDED), 1)
-CY_APP_DEFINES += -DAMA_ENABLED
-CY_APP_DEFINES += -DAMA_SPEECH_AUDIO_FORMAT_OPUS_BITRATE=0
-CY_APP_DEFINES += -DAMA_VOICE_BUFFER_LENGTH_IN_MS=500
-ifeq ($(HFP_HF_INCLUDED), 1)
-CY_APP_DEFINES += -DAMA_HANDSFREE_INCLUDED
-endif
-endif
-
-ifeq ($(HCI_TEST_INCLUDED), 1)
-CY_APP_DEFINES += -DWICED_APP_TEST_INCLUDED
-endif
-
-#
-# Patch Library for different target
-#
-ifeq ($(A2DP_SRC_INCLUDED), 1)
-CY_20706A2_APP_PATCH_LIBS += wiced_audio_source.a
-endif
-
-ifeq ($(TARGET),CYW943012EVB-04-BT)
-CY_APP_DEFINES += -DWICED_HCI_BAUDRATE=115200
-endif # 43012EVK-04-BT
-
-ifeq ($(TARGET),$(filter $(TARGET), CYBT-343026-EVAL CYBT-353027-EVAL))
-CY_APP_DEFINES += -DWICED_HCI_BAUDRATE=921600
-HCI_UART_DEFAULT_BAUD_3M=0
-endif
-
-CY_20819A1_APP_PATCH_LIBS += wiced_ble_pre_init_lib.a
-CY_20820A1_APP_PATCH_LIBS += wiced_ble_pre_init_lib.a
-
-ifeq ($(A2DP_SRC_INCLUDED), 1)
-CY_20719B2_APP_PATCH_LIBS += wiced_audio_source_lib.a
-CY_20721B2_APP_PATCH_LIBS += wiced_audio_source_lib.a
-endif
-ifeq ($(AMA_INCLUDED), 1)
-CY_20719B2_APP_PATCH_LIBS += i2s_aud_record_lib.a
-CY_20721B2_APP_PATCH_LIBS += i2s_aud_record_lib.a
-endif
-
-ifeq ($(A2DP_SRC_INCLUDED), 1)
-CY_43012C0_APP_PATCH_LIBS += wiced_audio_sink_lib.a
-endif
-ifneq ($(filter 1, $(HFP_AG_INCLUDED) $(HFP_HF_INCLUDED)), )
-CY_43012C0_APP_PATCH_LIBS += wiced_sco_lib.a
+ifeq ($(FASTPAIR_LOWPOWER_MODE), 1)
+CY_APP_DEFINES += -DLOW_POWER_MEASURE_MODE
 endif
 
 #
 # Components (middleware libraries)
 #
-COMPONENTS += bsp_design_modus
-
-ifeq ($(AUDIO_SHIELD_20721M2EVB_03_INCLUDED),1)
-DISABLE_COMPONENTS += bsp_design_modus
-COMPONENTS += bsp_design_modus_shield
+COMPONENTS +=bsp_design_modus
+COMPONENTS += a2dp_sink_profile
+ifneq ($(TARGET),$(filter $(TARGET), CYW920706WCDEVAL CYBT-343026-EVAL CYBT-353027-EVAL)) # 20706 does not support audio insert
+COMPONENTS += audio_insert_lib
 endif
-
-ifeq ($(AVRCP_TG_INCLUDED), 1)
-COMPONENTS += avrc_target
-endif
-
-ifeq ($(AVRCP_CT_INCLUDED), 1)
+COMPONENTS += audiomanager
 COMPONENTS += avrc_controller
-endif
-
-ifeq ($(HFP_AG_INCLUDED), 1)
-COMPONENTS += hfp_audio_gateway
-endif
-
-ifeq ($(HFP_HF_INCLUDED), 1)
+COMPONENTS += bt_hs_spk_lib
+COMPONENTS += button_manager
 COMPONENTS += handsfree_profile
-endif
 
-ifeq ($(AMS_INCLUDED), 1)
-COMPONENTS += ams
-endif
-
-ifeq ($(ANCS_INCLUDED), 1)
-COMPONENTS += ancs
-endif
-
-ifeq ($(AMA_INCLUDED), 1)
-COMPONENTS += ama
-COMPONENTS += audio_record_lib
-COMPONENTS += nanopbuf
-endif
-
-ifneq ($(filter 1, $(PANU_INCLUDED) $(PANNAP_INCLUDED)), )
-COMPONENTS += pan_lib
-endif
-
-#
-# Target Configuration
-#
-ifeq ($(TARGET),CYW920721M2EVK-01)
-COMPONENTS += audiomanager
-COMPONENTS += cyw9bt_audio2
-COMPONENTS += codec_cs47l35_lib
-CY_APP_DEFINES += -DCS47L35_CODEC_ENABLE
-CY_APP_DEFINES += -DCYW9BT_AUDIO
+ifeq ($(TARGET),$(filter $(TARGET), CYW920721M2EVK-01 CYW920721M2EVK-02 CYW920721M2EVB-03))
+CY_APP_DEFINES += -DPLATFORM_LED_DISABLED
+COMPONENTS += audio_uart
+CY_APP_PATCH_LIBS += wiced_audio_sink_lib.a
 CY_APP_PATCH_LIBS += wiced_mem_lib.a
-AUTO_ELNA_SWITCH = 1
-endif # TARGET
+endif
 
-ifneq ($(filter $(TARGET),CYW920721M2EVK-02 CYW920721M2EVB-03),)
-COMPONENTS += audiomanager
-COMPONENTS += cyw9bt_audio2
-COMPONENTS += codec_cs47l35_lib
-CY_APP_DEFINES += -DCS47L35_CODEC_ENABLE
-CY_APP_DEFINES += -DCYW9BT_AUDIO
-CY_APP_PATCH_LIBS += wiced_mem_lib.a
-AUTO_ELNA_SWITCH = 1
-endif # TARGET
+ifeq ($(TARGET),$(filter $(TARGET), CYW920706WCDEVAL CYBT-343026-EVAL CYBT-353027-EVAL))
+CY_APP_DEFINES += -DPLATFORM_LED_DISABLED
+CY_APP_DEFINES += -DCODEC_SPI_DIRECT_ENABLE
+COMPONENTS += audio_uart
+CY_APP_PATCH_LIBS += wiced_voice_path.a
+CY_APP_PATCH_LIBS += wiced_audio_sink.a
+#CY_APP_PATCH_LIBS += wiced_mem_lib.a
+endif
+
+ifeq ($(TARGET),$(filter $(TARGET), CYBT-343026-EVAL CYBT-353027-EVAL))
+# control_uart_ui expects 921600 on this board
+CY_APP_DEFINES += -DWICED_HCI_BAUDRATE=921600
+HCI_UART_DEFAULT_BAUD_3M=0
+endif
 
 ifeq ($(TARGET),CYW920721M2EVB-03)
 AUDIO_SHIELD_20721M2EVB_03_INCLUDED=1
@@ -384,75 +179,10 @@ DISABLE_COMPONENTS += bsp_design_modus
 COMPONENTS += bsp_design_modus_shield
 endif
 
-ifeq ($(TARGET),$(filter $(TARGET), CYW9M2BASE-43012BT))
-COMPONENTS += audiomanager
-COMPONENTS += cyw9bt_audio
-COMPONENTS += codec_ak4679_lib
-CY_APP_DEFINES += -DAK_4679_CODEC_ENABLE
-CY_APP_DEFINES += -DCYW9BT_AUDIO
-OTA_FW_UPGRADE = 0
-SLEEP_SUPPORT = 0
-endif # TARGET
-
-ifeq ($(TARGET),CYW943012BTEVK-01)
-COMPONENTS += audiomanager
-COMPONENTS += cyw9bt_audio2
-COMPONENTS += codec_cs47l35_lib
-CY_APP_DEFINES += -DCS47L35_CODEC_ENABLE
-CY_APP_DEFINES += -DCYW9BT_AUDIO
-OTA_FW_UPGRADE = 0
-SLEEP_SUPPORT = 0
-endif # TARGET
-
-ifeq ($(TARGET),CYW943022BTEVK-01)
-CY_APP_DEFINES += -DNO_PUART_SUPPORT
-CY_APP_DEFINES += -DHCI_TRACE_OVER_TRANSPORT
-CY_APP_DEFINES += -DENABLE_BLUETOOTH_HCI_TRACE
-CY_APP_DEFINES += -DAPP_CFG_ENABLE_BR_AUDIO=1
-CY_APP_DEFINES += -DLE_CONTROL_MAX_CONNECTIONS=4
-CY_APP_DEFINES += -DMAX_PHONE_CONNECTIONS=2
-# Apply new Audio Profiles
-ifeq ($(AVRCP_CT_INCLUDED), 1)
-DISABLE_COMPONENTS += avrc_controller
-COMPONENTS += avrc_controller_btstack
+ifeq ($(FASTPAIR_ENABLE),1)
+CY_APP_DEFINES += -DFASTPAIR_ENABLE
+COMPONENTS += gfps_provider
 endif
-ifeq ($(AVRCP_TG_INCLUDED), 1)
-DISABLE_COMPONENTS += avrc_target
-DISABLE_COMPONENTS += avrc_controller
-COMPONENTS += avrc_controller_btstack
-COMPONENTS += avrc_target_btstack
-endif
-ifeq ($(HFP_HF_INCLUDED), 1)
-DISABLE_COMPONENTS += handsfree_profile
-COMPONENTS += handsfree_profile_btstack
-CY_APP_DEFINES += -DWICED_BT_HFP_HF_WBS_INCLUDED=TRUE
-endif
-endif # TARGET
-
-ifeq ($(TARGET),CYW955572BTEVK-01)
-CY_APP_DEFINES += -DAPP_CFG_ENABLE_BR_AUDIO=1
-# Apply new Audio Profiles
-ifeq ($(AVRCP_CT_INCLUDED), 1)
-DISABLE_COMPONENTS += avrc_controller
-COMPONENTS += avrc_controller_btstack
-endif
-ifeq ($(AVRCP_TG_INCLUDED), 1)
-DISABLE_COMPONENTS += avrc_target
-COMPONENTS += avrc_target_btstack
-endif
-ifeq ($(HFP_HF_INCLUDED), 1)
-DISABLE_COMPONENTS += handsfree_profile
-COMPONENTS += handsfree_profile_btstack
-CY_APP_DEFINES += -DWICED_BT_HFP_HF_WBS_INCLUDED=TRUE
-endif
-endif # TARGET
-
-ifeq ($(TARGET),$(filter $(TARGET), CYW920721M2EVK-01 CYW920721M2EVK-02 CYW920721M2EVB-03))
-ifeq ($(MP3_DECODER_INCLUDED), 1)
-COMPONENTS += mp3_decoder_lib
-CY_APP_DEFINES += -DMP3_DECODER_INCLUDED
-endif # MP3_DECODER_INCLUDED
-endif # 20721B2
 
 ifeq ($(AUTO_ELNA_SWITCH),1)
 CY_APP_DEFINES += -DAUTO_ELNA_SWITCH
@@ -462,13 +192,9 @@ ifeq ($(AUTO_EPA_SWITCH),1)
 CY_APP_DEFINES += -DAUTO_EPA_SWITCH
 endif
 
-ifeq ($(OTA_FW_UPGRADE),1)
-CY_APP_DEFINES += -DOTA_FW_UPGRADE=1
-COMPONENTS += fw_upgrade_lib
-OTA_SEC_FW_UPGRADE ?= 0
-ifeq ($(OTA_SEC_FW_UPGRADE), 1)
-    CY_APP_DEFINES += -DOTA_SECURE_FIRMWARE_UPGRADE
-endif
+# Add led manager component
+ifeq ($(filter $(CY_APP_DEFINES),-DPLATFORM_LED_DISABLED),)
+COMPONENTS += led_manager
 endif
 
 ################################################################################
@@ -492,7 +218,7 @@ CY_GETLIBS_SHARED_PATH=../
 CY_GETLIBS_SHARED_NAME=mtb_shared
 
 # Absolute path to the compiler (Default: GCC in the tools)
-CY_COMPILER_PATH=
+# CY_COMPILER_PATH=
 
 # Locate ModusToolbox IDE helper tools folders in default installation
 # locations for Windows, Linux, and macOS.
