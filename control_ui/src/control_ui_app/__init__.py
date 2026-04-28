@@ -1,1 +1,0 @@
-"""NavTool control UI package."""

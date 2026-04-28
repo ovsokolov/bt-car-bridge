@@ -55,6 +55,9 @@
 mtb-example-btsdk-audio-watch/
 
 # Out-of-scope project trees for now
+control_ui/
+headset_hfp_hf/
+headset_hfp_ag/
 mtb-example-btsdk-audio-watch-ama-master/
 mtb-example-psoc-edge-btstack-a2dp-sink-master/
 mtb-example-psoc-edge-btstack-a2dp-source-master/
