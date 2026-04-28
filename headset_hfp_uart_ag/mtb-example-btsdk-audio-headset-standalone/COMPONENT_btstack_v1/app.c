@@ -46,6 +46,7 @@
 #include "app.h"
 #include "cycfg_gatt_db.h"
 #include "hci_control_rc_controller.h"
+#include "wiced_hal_nvram.h"
 
 /******************************************************
  *               defines
@@ -60,6 +61,9 @@
 #else
 #define WICED_TRANSPORT_BUFFER_COUNT    2
 #endif
+
+#define APP_LINK_KEY_NVRAM_COUNT        5
+#define APP_LINK_KEY_NVRAM_LAST_ID      (HCI_CONTROL_FIRST_VALID_NVRAM_ID + APP_LINK_KEY_NVRAM_COUNT - 1)
 
 /******************************************************
  *               extern variables
@@ -275,6 +279,15 @@ int app_write_nvram( int nvram_id, int data_len, void *p_data, wiced_bool_t from
 #endif
     WICED_BT_TRACE("Updated Addr Resolution DB:%d\n", result );
 
+    if ( ( nvram_id >= HCI_CONTROL_FIRST_VALID_NVRAM_ID ) && ( nvram_id <= APP_LINK_KEY_NVRAM_LAST_ID ) )
+    {
+        uint8_t bytes_written = wiced_hal_write_nvram( (uint8_t)nvram_id,
+                                                       (uint8_t)data_len,
+                                                       (uint8_t *)p_data,
+                                                       &result );
+        WICED_BT_TRACE("Local NVRAM write:id:%d bytes:%d status:%d\n", nvram_id, bytes_written, result);
+    }
+
     // If NVRAM chunk arrived from host, no need to send it back, otherwise send over transport
     if (!from_host)
     {
@@ -290,6 +303,58 @@ int app_write_nvram( int nvram_id, int data_len, void *p_data, wiced_bool_t from
         hci_control_send_command_status_evt( HCI_CONTROL_EVENT_COMMAND_STATUS, HCI_CONTROL_STATUS_SUCCESS );
     }
     return (data_len);
+}
+
+int app_restore_nvram( void )
+{
+    uint8_t data[sizeof(wiced_bt_device_link_keys_t)];
+    wiced_result_t result;
+    int nvram_id;
+    int restored = 0;
+
+    for ( nvram_id = HCI_CONTROL_FIRST_VALID_NVRAM_ID;
+          nvram_id <= APP_LINK_KEY_NVRAM_LAST_ID;
+          nvram_id++ )
+    {
+        uint8_t bytes_read = wiced_hal_read_nvram( (uint8_t)nvram_id,
+                                                   (uint8_t)sizeof(data),
+                                                   data,
+                                                   &result );
+
+        if ( ( bytes_read == sizeof(wiced_bt_device_link_keys_t) ) && ( result == WICED_SUCCESS ) )
+        {
+            hci_control_nvram_chunk_t *p1;
+
+            if ( ( p1 = ( hci_control_nvram_chunk_t * )wiced_bt_get_buffer_from_pool( p_key_info_pool ) ) == NULL)
+            {
+                WICED_BT_TRACE( "Failed to restore NVRAM id:%d len:%d\n", nvram_id, bytes_read );
+                continue;
+            }
+
+            if ( wiced_bt_get_buffer_size( p1 ) < ( sizeof( hci_control_nvram_chunk_t ) + bytes_read - 1 ) )
+            {
+                WICED_BT_TRACE( "Insufficient restore buffer, Buff Size %d, Len %d\n",
+                                wiced_bt_get_buffer_size( p1 ),
+                                ( sizeof( hci_control_nvram_chunk_t ) + bytes_read - 1 ) );
+                wiced_bt_free_buffer( p1 );
+                continue;
+            }
+
+            p1->p_next    = p_nvram_first;
+            p1->nvram_id  = nvram_id;
+            p1->chunk_len = bytes_read;
+            memcpy( p1->data, data, bytes_read );
+            p_nvram_first = p1;
+
+            result = wiced_bt_dev_add_device_to_address_resolution_db( (wiced_bt_device_link_keys_t *)data,
+                                                                       ((wiced_bt_device_link_keys_t *)data)->key_data.ble_addr_type );
+            restored++;
+            WICED_BT_TRACE("Local NVRAM restore:id:%d bytes:%d ardb:%d\n", nvram_id, bytes_read, result);
+        }
+    }
+
+    WICED_BT_TRACE("Local NVRAM restore complete:%d\n", restored);
+    return restored;
 }
 
 wiced_result_t app_stack_init( void )

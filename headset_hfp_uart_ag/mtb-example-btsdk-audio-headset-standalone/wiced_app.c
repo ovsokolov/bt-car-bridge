@@ -64,6 +64,7 @@
 #include "hci_control.h"
 #include "hci_control_le.h"
 #include "hci_control_rc_controller.h"
+#include "wiced_bt_avrc_tg.h"
 #include "le_peripheral.h"
 #include "wiced_app_cfg.h"
 #include "wiced_app.h"
@@ -93,6 +94,8 @@ static void ag_start_puart_rx_flush(void);
 static void ag_bridge_puart_rx_cb(void *arg);
 static void ag_bridge_puart_process_byte(uint8_t byte);
 static void ag_bridge_hci_log(const char *prefix, const uint8_t *line, uint16_t line_len);
+static void ag_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg);
+static wiced_bool_t ag_get_last_bonded_device(wiced_bt_device_address_t bd_addr);
 
 #if defined(CYW20819A1)
 #include "wiced_memory_pre_init.h"
@@ -121,6 +124,135 @@ static uint16_t ag_bridge_pending_rx_len[AG_BRIDGE_RX_QUEUE_DEPTH];
 static uint8_t ag_bridge_pending_rx_head = 0;
 static uint8_t ag_bridge_pending_rx_tail = 0;
 static uint8_t ag_bridge_pending_rx_count = 0;
+static wiced_timer_t ag_autoreconnect_timer;
+static wiced_bt_device_address_t ag_autoreconnect_bda = {0};
+static uint8_t ag_autoreconnect_stage = 0;
+static uint8_t ag_autoreconnect_retry_count = 0;
+
+#define AG_AUTORECONNECT_STAGE_HFP   1U
+#define AG_AUTORECONNECT_STAGE_AVRCP 2U
+#define AG_AUTORECONNECT_STAGE_A2DP  3U
+#define AG_AUTORECONNECT_BACKOFF_CAP_SECONDS 30U
+
+static uint32_t ag_autoreconnect_next_backoff(uint32_t base_delay_seconds)
+{
+    uint32_t shift = ag_autoreconnect_retry_count;
+    uint32_t delay = (base_delay_seconds == 0U) ? 2U : base_delay_seconds;
+
+    if (shift > 4U)
+    {
+        shift = 4U;
+    }
+
+    delay <<= shift;
+    if (delay > AG_AUTORECONNECT_BACKOFF_CAP_SECONDS)
+    {
+        delay = AG_AUTORECONNECT_BACKOFF_CAP_SECONDS;
+    }
+
+    if (ag_autoreconnect_retry_count < 0xFFU)
+    {
+        ag_autoreconnect_retry_count++;
+    }
+
+    return delay;
+}
+
+void hf_autoreconnect_restart_full(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds)
+{
+    static const wiced_bt_device_address_t empty_bda = {0};
+
+    if (memcmp(bd_addr, empty_bda, BD_ADDR_LEN) == 0)
+    {
+        return;
+    }
+
+    memcpy(ag_autoreconnect_bda, bd_addr, BD_ADDR_LEN);
+    ag_autoreconnect_stage = AG_AUTORECONNECT_STAGE_HFP;
+    wiced_stop_timer(&ag_autoreconnect_timer);
+    wiced_start_timer(&ag_autoreconnect_timer, (delay_seconds == 0U) ? 1U : delay_seconds);
+
+    WICED_BT_TRACE("[AUTO_AG] queued staged reconnect to <%B> in %lu sec retry_count=%u\n",
+                   ag_autoreconnect_bda,
+                   (unsigned long)((delay_seconds == 0U) ? 1U : delay_seconds),
+                   ag_autoreconnect_retry_count);
+    hci_control_send_bridge_status_line("AUTO_AG:queued staged reconnect");
+}
+
+void hf_autoreconnect_cancel(void)
+{
+    ag_autoreconnect_stage = 0;
+    ag_autoreconnect_retry_count = 0;
+    wiced_stop_timer(&ag_autoreconnect_timer);
+
+    WICED_BT_TRACE("[AUTO_AG] reconnect cancelled for manual action\n");
+    hci_control_send_bridge_status_line("AUTO_AG:cancelled manual action");
+}
+
+void hf_autoreconnect_hfp_opened(void)
+{
+    if (ag_autoreconnect_stage != AG_AUTORECONNECT_STAGE_AVRCP)
+    {
+        return;
+    }
+
+    WICED_BT_TRACE("[AUTO_AG] HFP AG opened; continue staged reconnect\n");
+    hci_control_send_bridge_status_line("AUTO_AG:HFP_AG open continue");
+    wiced_stop_timer(&ag_autoreconnect_timer);
+    wiced_start_timer(&ag_autoreconnect_timer, 1);
+}
+
+static void ag_autoreconnect_timer_cb(TIMER_PARAM_TYPE arg)
+{
+    UNUSED_VARIABLE(arg);
+
+    if (ag_autoreconnect_stage == AG_AUTORECONNECT_STAGE_HFP)
+    {
+        WICED_BT_TRACE("[AUTO_AG] reconnect stage HFP to <%B>\n", ag_autoreconnect_bda);
+        hci_control_send_bridge_status_line("AUTO_AG:stage HFP_AG");
+#ifdef WICED_APP_HFP_AG_INCLUDED
+        hci_control_switch_hfp_role(HFP_AUDIO_GATEWAY_ROLE);
+        hfp_ag_connect(ag_autoreconnect_bda);
+#endif
+        ag_autoreconnect_stage = AG_AUTORECONNECT_STAGE_AVRCP;
+        ag_autoreconnect_retry_count = 0;
+        hci_control_send_bridge_status_line("AUTO_AG:wait HFP_AG open");
+    }
+    else if (ag_autoreconnect_stage == AG_AUTORECONNECT_STAGE_AVRCP)
+    {
+        WICED_BT_TRACE("[AUTO_AG] reconnect stage AVRCP TG to <%B>\n", ag_autoreconnect_bda);
+        hci_control_send_bridge_status_line("AUTO_AG:stage AVRCP_TG");
+#ifdef WICED_APP_AUDIO_RC_TG_INCLUDED
+        wiced_bt_avrc_tg_initiate_open(ag_autoreconnect_bda);
+#endif
+        ag_autoreconnect_stage = AG_AUTORECONNECT_STAGE_A2DP;
+        ag_autoreconnect_retry_count = 0;
+        wiced_start_timer(&ag_autoreconnect_timer, 1);
+    }
+    else if (ag_autoreconnect_stage == AG_AUTORECONNECT_STAGE_A2DP)
+    {
+        WICED_BT_TRACE("[AUTO_AG] reconnect stage A2DP source to <%B>\n", ag_autoreconnect_bda);
+        hci_control_send_bridge_status_line("AUTO_AG:stage A2DP_SRC");
+#ifdef WICED_APP_AUDIO_SRC_INCLUDED
+        av_app_initiate_sdp(ag_autoreconnect_bda);
+#endif
+        ag_autoreconnect_stage = 0;
+        ag_autoreconnect_retry_count = 0;
+    }
+}
+
+static wiced_bool_t ag_get_last_bonded_device(wiced_bt_device_address_t bd_addr)
+{
+    hci_control_nvram_chunk_t *chunk = p_nvram_first;
+
+    if (chunk != NULL)
+    {
+        memcpy(bd_addr, chunk->data, BD_ADDR_LEN);
+        return WICED_TRUE;
+    }
+
+    return WICED_FALSE;
+}
 
 static void ag_puart_rx_flush_timer_cb(uint32_t arg)
 {
@@ -416,7 +548,7 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
 
         case BTM_PIN_REQUEST_EVT:
             WICED_BT_TRACE("remote address= %B\n", p_event_data->pin_request.bd_addr);
-            wiced_bt_dev_pin_code_reply(*p_event_data->pin_request.bd_addr, WICED_BT_SUCCESS, WICED_PIN_CODE_LEN, (uint8_t *)&pincode[0]);
+            hci_control_send_pin_request_evt(*p_event_data->pin_request.bd_addr);
             break;
 
         case BTM_USER_CONFIRMATION_REQUEST_EVT:
@@ -463,6 +595,12 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
             {
                 pairing_result = p_pairing_cmpl->pairing_complete_info.br_edr.status;
                 hci_control_send_pairing_completed_evt( pairing_result, p_event_data->pairing_complete.bd_addr );
+                if ( pairing_result == WICED_BT_SUCCESS )
+                {
+                    ag_autoreconnect_retry_count = 0;
+                    hci_control_send_bridge_status_line("AUTO_AG:HFP then A2DP after pair");
+                    hci_control_ag_connect_profiles_for_peer( p_event_data->pairing_complete.bd_addr );
+                }
             }
             else
             {
@@ -486,6 +624,17 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
                 le_peripheral_encryption_status_changed(p_encryption_status);
 #endif
             hci_control_send_encryption_changed_evt( p_encryption_status->result, p_encryption_status->bd_addr );
+            if ( ( p_encryption_status->transport == BT_TRANSPORT_BR_EDR ) &&
+                 ( p_encryption_status->result != WICED_BT_SUCCESS ) )
+            {
+                WICED_BT_TRACE("[AUTO_AG] encryption failure reconnect disabled for initial-connect debug\n");
+                hci_control_send_bridge_status_line("AUTO_AG:disabled encrypt fail");
+            }
+            else if ( ( p_encryption_status->transport == BT_TRANSPORT_BR_EDR ) &&
+                      ( p_encryption_status->result == WICED_BT_SUCCESS ) )
+            {
+                ag_autoreconnect_retry_count = 0;
+            }
             break;
 
         case BTM_SECURITY_REQUEST_EVT:
@@ -502,6 +651,9 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
             break;
 
         case BTM_PAIRED_DEVICE_LINK_KEYS_UPDATE_EVT:
+            WICED_BT_TRACE("BTM_PAIRED_DEVICE_LINK_KEYS_UPDATE_EVT save keys for %B\n",
+                           p_event_data->paired_device_link_keys_update.bd_addr);
+            hci_control_send_bridge_status_line("PAIR:link keys save");
             app_paired_device_link_keys_update( p_event_data );
             break;
 
@@ -515,11 +667,13 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
 
                  result = WICED_BT_SUCCESS;
                  WICED_BT_TRACE("Read:nvram_id:%d bytes:%d\n", nvram_id, bytes_read);
+                 hci_control_send_bridge_status_line("PAIR:link key restore ok");
             }
             else
             {
                 result = WICED_BT_ERROR;
                 WICED_BT_TRACE("Key retrieval failure\n");
+                hci_control_send_bridge_status_line("PAIR:link key restore fail");
             }
             break;
 
@@ -604,6 +758,7 @@ wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_manag
 wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data)
 {
     wiced_result_t result;
+    wiced_bt_device_address_t bonded_addr;
 
 #ifdef CYW20706A2
     wiced_bt_app_init();
@@ -615,10 +770,38 @@ wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data)
     if (!wiced_bt_sdp_db_init((uint8_t *)wiced_app_cfg_sdp_record, wiced_app_cfg_sdp_record_get_size()))
     {
         WICED_BT_TRACE("ERROR sdp_db_init\n");
+        hci_control_send_bridge_status_line("INIT:SDP failed");
         return WICED_BT_ERROR;
     }
+    WICED_BT_TRACE("SDP database registered\n");
+    hci_control_send_bridge_status_line("INIT:SDP registered");
 
     hci_control_post_init();
+
+    wiced_init_timer(&ag_autoreconnect_timer, ag_autoreconnect_timer_cb, 0, WICED_SECONDS_TIMER);
+
+    wiced_bt_dev_set_discoverability(BTM_GENERAL_DISCOVERABLE,
+                                     BTM_DEFAULT_DISC_WINDOW,
+                                     BTM_DEFAULT_DISC_INTERVAL);
+    wiced_bt_dev_set_connectability(WICED_TRUE,
+                                    BTM_DEFAULT_CONN_WINDOW,
+                                    BTM_DEFAULT_CONN_INTERVAL);
+    hci_control_cb.pairing_allowed = WICED_TRUE;
+    wiced_bt_set_pairable_mode(WICED_TRUE, 0);
+    WICED_BT_TRACE("Boot default visibility/connectability/pairability enabled\n");
+    hci_control_send_bridge_status_line("BOOT:connectable pairable discoverable");
+
+    if (ag_get_last_bonded_device(bonded_addr))
+    {
+        ag_autoreconnect_retry_count = 0;
+        WICED_BT_TRACE("[AUTO_AG] boot bonded peer <%B>; auto reconnect disabled for initial-connect debug\n", bonded_addr);
+        hci_control_send_bridge_status_line("AUTO_AG:boot disabled bonded peer");
+    }
+    else
+    {
+        WICED_BT_TRACE("[AUTO_AG] no bonded peer found at boot\n");
+        hci_control_send_bridge_status_line("AUTO_AG:no bonded peer at boot");
+    }
 
 #ifdef CYW9BT_AUDIO
     /* Initialize AudioManager */

@@ -149,6 +149,49 @@ typedef struct
 /* A2DP module control block */
 static tAV_APP_CB av_app_cb;
 
+static char *av_app_diag_append_text(char *p, char *end, const char *text)
+{
+    while ((p < end) && (*text != '\0'))
+    {
+        *p++ = *text++;
+    }
+    return p;
+}
+
+static char *av_app_diag_append_hex8(char *p, char *end, uint8_t value)
+{
+    static const char hex[] = "0123456789ABCDEF";
+
+    if ((end - p) >= 4)
+    {
+        *p++ = '0';
+        *p++ = 'x';
+        *p++ = hex[(value >> 4) & 0x0F];
+        *p++ = hex[value & 0x0F];
+    }
+
+    return p;
+}
+
+static void av_app_send_diag(const char *phase, uint8_t status, uint8_t extra)
+{
+    char line[88];
+    char *p = line;
+    char *end = &line[sizeof(line) - 1];
+
+    p = av_app_diag_append_text(p, end, "A2DP_DIAG:phase=");
+    p = av_app_diag_append_text(p, end, phase);
+    p = av_app_diag_append_text(p, end, ",state=");
+    p = av_app_diag_append_hex8(p, end, (uint8_t)av_app_cb.state);
+    p = av_app_diag_append_text(p, end, ",status=");
+    p = av_app_diag_append_hex8(p, end, status);
+    p = av_app_diag_append_text(p, end, ",extra=");
+    p = av_app_diag_append_hex8(p, end, extra);
+    *p = '\0';
+
+    hci_control_send_bridge_status_line(line);
+}
+
 /* SBC codec capabilities */
 static const wiced_bt_a2d_sbc_cie_t av_sbc_caps =
 {
@@ -660,6 +703,7 @@ static void av_app_send_setconfiguration( TIMER_PARAM_TYPE cb_params )
     else
     {
         WICED_BT_TRACE( "[%s]: ERROR: No peer format match found", __FUNCTION__ );
+        av_app_send_diag("codec_no_match", AVDT_ERR_BAD_STATE, (uint8_t)av_app_cb.peer_num_seps);
         av_app_disconnect_connection();
     }
 }
@@ -681,6 +725,7 @@ static void av_app_getcap_cmpl( uint8_t handle, BD_ADDR bd_addr, uint8_t event, 
         wiced_bt_free_buffer(av_app_cb.avdt_sep_config);
         av_app_cb.avdt_sep_config = NULL;
         WICED_BT_TRACE( "[%s]: ERROR: getcap status = %d", __FUNCTION__, p_data->getcap_cfm.hdr.err_code );
+        av_app_send_diag("getcap_cfm_fail", p_data->getcap_cfm.hdr.err_code, (uint8_t)av_app_cb.sep_info_idx);
         /* TODO: getcap failed, report error to someone? Disconnect? */
         return;
     }
@@ -800,11 +845,17 @@ static wiced_bool_t av_app_next_getcap( wiced_bt_avdt_sep_info_t *p_sep_info,
         if ( getcap_status != AVDT_SUCCESS )
         {
             WICED_BT_TRACE( "[%s]: ERROR: getcap call status = %d", __FUNCTION__, getcap_status );
+            av_app_send_diag("getcap_req_fail", (uint8_t)getcap_status, p_sep_info[av_app_cb.sep_info_idx].seid);
             last_getcap = WICED_TRUE;
+        }
+        else
+        {
+            av_app_send_diag("getcap_req_sent", (uint8_t)getcap_status, p_sep_info[av_app_cb.sep_info_idx].seid);
         }
     }
     else
     {
+        av_app_send_diag("getcap_no_sink_sep", AVDT_SUCCESS, av_app_cb.peer_num_seps);
         last_getcap = WICED_TRUE;
     }
 
@@ -828,11 +879,14 @@ static void av_app_disc_results (uint8_t handle, BD_ADDR bd_addr, uint8_t event,
     if (p_discover->hdr.err_code != AVDT_SUCCESS)
     {
         WICED_BT_TRACE( "[%s]: ERROR: discover status = %d", __FUNCTION__, p_discover->hdr.err_code);
+        av_app_send_diag("discover_fail", p_discover->hdr.err_code, p_discover->num_seps);
         wiced_bt_free_buffer(av_app_cb.sep_info);
         av_app_cb.sep_info = NULL;
         av_app_disconnect_connection();
         return;
     }
+
+    av_app_send_diag("discover_ok", p_discover->hdr.err_code, p_discover->num_seps);
 
 #if 0
 
@@ -883,11 +937,13 @@ static void av_app_disc_results (uint8_t handle, BD_ADDR bd_addr, uint8_t event,
             (p_discover->p_sep_info[i].media_type == av_app_cb.stream_cb.media_type))
         {
             sink_cnt++;
+            av_app_send_diag("discover_sink_sep", p_discover->p_sep_info[i].seid, p_discover->p_sep_info[i].in_use);
         }
     }
 
 
     WICED_BT_TRACE( "[%s]: sink_cnt: = %d", __FUNCTION__, sink_cnt );
+    av_app_send_diag("discover_sink_count", sink_cnt, p_discover->num_seps);
 
     if (sink_cnt != 0)
     {
@@ -927,6 +983,7 @@ static void av_app_disc_results (uint8_t handle, BD_ADDR bd_addr, uint8_t event,
     else
     {
         WICED_BT_TRACE( "[%s] WARNING No Available Sink SEPs on remote", __FUNCTION__ );
+        av_app_send_diag("discover_no_sink", AVDT_SUCCESS, p_discover->num_seps);
         /* TODO: Need to disconnect? */
     }
 }
@@ -938,6 +995,7 @@ static void av_app_disc_results (uint8_t handle, BD_ADDR bd_addr, uint8_t event,
 static void av_app_connect_event_hdlr(uint8_t handle, BD_ADDR bd_addr)
 {
     WICED_BT_TRACE( "[%s]: Handle: 0x%04x", __FUNCTION__, handle);
+    av_app_send_diag("avdt_connected", AVDT_SUCCESS, handle);
 
     av_app_cb.state = AV_STATE_CONNECTED;
     /* Restore default connection parameters as they may have been reset by previous connection. */
@@ -962,6 +1020,7 @@ static void av_app_disconnect_event_hdlr( uint8_t handle, BD_ADDR bd_addr, uint8
     av_app_cb.state = AV_STATE_IDLE;
 
     WICED_BT_TRACE( "[%s]: handle:%04x\n\r", __FUNCTION__, av_app_cb.avdt_handle );
+    av_app_send_diag("disconnect", p_data->disconnect_ind.err_code, p_data->disconnect_ind.err_param);
 
     /* If SDP in progress, stop and deallocate memory */
     if (av_app_cb.p_sdp_db != NULL)
@@ -1007,6 +1066,7 @@ static void av_app_open_confirm_event_hdlr(uint8_t handle, BD_ADDR bd_addr, uint
     if (AVDT_SUCCESS == p_data->open_cfm.hdr.err_code)
     {
         av_app_cb.state = AV_STATE_OPEN;
+        av_app_send_diag("open_ok", p_data->open_cfm.hdr.err_code, handle);
 
         WICED_BT_TRACE( "AVDT open confirm success %d\n\r", p_data->open_cfm.lcid);
         lcid = p_data->open_cfm.lcid;
@@ -1036,8 +1096,11 @@ static void av_app_open_confirm_event_hdlr(uint8_t handle, BD_ADDR bd_addr, uint
     }
     else
     {
+        av_app_send_diag("open_fail", p_data->open_cfm.hdr.err_code, handle);
         av_app_cb.reconfigure = WICED_FALSE;
         av_app_cb.is_interrupted = WICED_FALSE;
+        av_app_cb.state = AV_STATE_IDLE;
+        hci_control_audio_send_connect_complete( bd_addr, p_data->open_cfm.hdr.err_code, handle );
     }
 }
 
@@ -1327,6 +1390,7 @@ static void av_app_proc_stream_evt( uint8_t handle, BD_ADDR bd_addr, uint8_t eve
     {
         WICED_BT_TRACE ("[%s]: Handle: %d <%B> Event: %d (%s) State: %d (%s)\n\r", __FUNCTION__,
             handle, bd_addr, event, dump_avdt_event_name (event), av_app_cb.state, dump_state_name (av_app_cb.state));
+        av_app_send_diag("avdt_evt", event, p_data ? p_data->hdr.err_code : 0);
     }
 
     switch ( event )
@@ -1455,10 +1519,12 @@ static wiced_result_t av_app_create_connection(void)
     if (avdt_status != AVDT_SUCCESS)
     {
         WICED_BT_TRACE( "[%s] Failed!! avdt_status = %d\n\r", __FUNCTION__, avdt_status );
+        av_app_send_diag("avdt_conn_fail", (uint8_t)avdt_status, (uint8_t)av_app_cb.state);
         return WICED_NOT_CONNECTED;
     }
 
     av_app_cb.state = AV_STATE_CONNECTING;
+    av_app_send_diag("avdt_connecting", (uint8_t)avdt_status, (uint8_t)av_app_cb.state);
     return WICED_SUCCESS;
 }
 
@@ -1525,6 +1591,7 @@ static wiced_result_t av_app_send_discover_req( void )
     uint8_t max_seps = 0;
 
     WICED_BT_TRACE( "[%s] state: %d\n\r", __FUNCTION__, av_app_cb.state );
+    av_app_send_diag("discover_req", AVDT_SUCCESS, (uint8_t)av_app_cb.state);
 
     if (av_app_cb.sep_info != NULL)
     {
@@ -1543,13 +1610,19 @@ static wiced_result_t av_app_send_discover_req( void )
         status = WICED_SUCCESS;
 
         max_seps = wiced_bt_get_buffer_size(p_sep_info) / sizeof(wiced_bt_avdt_sep_info_t);
+        av_app_send_diag("discover_send", AVDT_SUCCESS, max_seps);
         if ( AVDT_SUCCESS != wiced_bt_avdt_discover_req( av_app_cb.peer_bda, p_sep_info, max_seps, av_app_disc_results ) )
         {
             WICED_BT_TRACE( "[%s] failed!!\n\r", __FUNCTION__ );
+            av_app_send_diag("discover_req_fail", (uint8_t)WICED_ERROR, max_seps);
             wiced_bt_free_buffer(p_sep_info);
             status = WICED_ERROR;
         }
     }
+    }
+    else
+    {
+        av_app_send_diag("discover_no_buf", (uint8_t)WICED_ERROR, (uint8_t)(discover_size & 0xFF));
     }
 
     return status;
@@ -1963,7 +2036,9 @@ void av_app_sdp_cback( uint16_t sdp_result )
     wiced_bt_sdp_discovery_record_t *p_rec = NULL;
     wiced_bt_sdp_protocol_elem_t     elem;
 
-    if ( sdp_result == WICED_BT_SDP_SUCCESS )
+    av_app_send_diag("sdp_cback", (uint8_t)sdp_result, 0);
+
+    if ( ( sdp_result == WICED_BT_SDP_SUCCESS ) || ( sdp_result == WICED_BT_SDP_DB_FULL ) )
     {
         // Search Sink record and find AVDTP version
         if ( (p_rec = wiced_bt_sdp_find_service_in_db (av_app_cb.p_sdp_db,
@@ -1978,8 +2053,14 @@ void av_app_sdp_cback( uint16_t sdp_result )
 
                 av_app_cb.peer_avdt_version = elem.params[0];
                 WICED_BT_TRACE( "Service is found in the remote device %x\n\r", av_app_cb.peer_avdt_version );
+                av_app_send_diag("sdp_sink_found", AVDT_SUCCESS, (uint8_t)av_app_cb.peer_avdt_version);
             }
         }
+    }
+
+    if (av_app_cb.state != AV_STATE_SDP_DONE)
+    {
+        av_app_send_diag("sdp_no_sink", (uint8_t)sdp_result, (uint8_t)av_app_cb.state);
     }
 
     /* Free the SDP db */
@@ -2001,6 +2082,7 @@ void av_app_sdp_cback( uint16_t sdp_result )
             }
 
             WICED_BT_TRACE( "[%s] av_app_create_connection status: %d\n\r", __FUNCTION__, status );
+            av_app_send_diag("avdt_connect_req", (uint8_t)status, (uint8_t)av_app_cb.state);
         }
         else
         {
@@ -2035,6 +2117,7 @@ wiced_result_t av_app_initiate_sdp( BD_ADDR bda )
     wiced_bool_t                result = WICED_FALSE;
 
     memcpy( av_app_cb.peer_bda, bda, BD_ADDR_LEN );
+    av_app_send_diag("sdp_start", AVDT_SUCCESS, (uint8_t)av_app_cb.state);
 
     if ( !av_app_cb.p_sdp_db )
     {
@@ -2042,6 +2125,7 @@ wiced_result_t av_app_initiate_sdp( BD_ADDR bda )
         av_app_cb.p_sdp_db = ( wiced_bt_sdp_discovery_db_t * ) wiced_bt_get_buffer( SDP_DB_LEN );
         if ( av_app_cb.p_sdp_db == NULL )
         {
+            av_app_send_diag("sdp_no_buf", (uint8_t)WICED_ERROR, 0);
             return WICED_ERROR;
         }
     }
@@ -2061,16 +2145,19 @@ wiced_result_t av_app_initiate_sdp( BD_ADDR bda )
         if ( wiced_bt_sdp_service_search_attribute_request( av_app_cb.peer_bda, av_app_cb.p_sdp_db, av_app_sdp_cback) )
         {
             av_app_cb.state = AV_STATE_SDP_IN_PROGRESS;
+            av_app_send_diag("sdp_req_sent", AVDT_SUCCESS, (uint8_t)av_app_cb.state);
             return WICED_SUCCESS;
         }
         else
         {
             WICED_BT_TRACE("[%s] wiced_bt_sdp_service_search_attribute_request fail \n", __func__);
+            av_app_send_diag("sdp_req_fail", (uint8_t)WICED_ERROR, (uint8_t)av_app_cb.state);
         }
     }
     else
     {
         WICED_BT_TRACE("[%s] wiced_bt_sdp_init_discovery_db fail \n", __func__);
+        av_app_send_diag("sdp_init_fail", (uint8_t)WICED_ERROR, (uint8_t)av_app_cb.state);
     }
 
     wiced_bt_free_buffer(av_app_cb.p_sdp_db);

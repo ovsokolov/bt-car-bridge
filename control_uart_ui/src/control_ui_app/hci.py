@@ -595,6 +595,14 @@ def decode_rx_message(opcode_value: int, payload: bytes) -> str:
         return f"Numeric comparison requested: {numeric_value}"
     if opcode_value == EVENT_PIN_REQUEST and len(payload) >= 6:
         return f"PIN code requested for {bd_addr_to_display(payload[:6])}"
+    if opcode_value == EVENT_AUDIO_SRC_CONNECTION_FAILED and len(payload) >= 4:
+        status = payload[0]
+        state = payload[1]
+        handle = payload[2] | (payload[3] << 8)
+        return (
+            f"A2DP Source Connection Failed ({_opcode_hex(opcode_value)}): "
+            f"status=0x{status:02X}, state=0x{state:02X}, handle={handle}"
+        )
     if opcode_value == EVENT_INQUIRY_COMPLETE:
         return "Device search completed"
     if opcode_value == EVENT_INQUIRY_RESULT and len(payload) >= 10:

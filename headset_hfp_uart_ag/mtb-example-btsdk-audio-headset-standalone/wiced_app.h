@@ -68,6 +68,9 @@ app_identity_random_mapping_t * get_empty_addr_mapping();
 void hci_control_transport_status( wiced_transport_type_t type );
 uint32_t hci_control_proc_rx_cmd( uint8_t *p_data, uint32_t length );
 wiced_result_t btm_event_handler(wiced_bt_management_evt_t event, wiced_bt_management_evt_data_t *p_event_data);
+void hf_autoreconnect_cancel(void);
+void hf_autoreconnect_hfp_opened(void);
+void hf_autoreconnect_restart_full(const wiced_bt_device_address_t bd_addr, uint32_t delay_seconds);
 
 extern hci_control_nvram_chunk_t *p_nvram_first;
 extern const uint8_t pincode[WICED_PIN_CODE_LEN];

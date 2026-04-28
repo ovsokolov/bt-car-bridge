@@ -398,7 +398,7 @@ class SerialBridgeSession:
 
     def a2dp_source_connect(self, address: str) -> None:
         self._remember_remote(address)
-        self.send(COMMAND_AUDIO_SRC_CONNECT, bd_addr_to_command(address))
+        self.send(COMMAND_AUDIO_SRC_CONNECT, bd_addr_to_command(address) + b"\x01")
 
     def a2dp_source_disconnect(self) -> None:
         self.send(COMMAND_AUDIO_SRC_DISCONNECT)
@@ -551,6 +551,7 @@ class SerialBridgeSession:
             ("Stopping inquiry before pairing", self.stop_inquiry, 0.5),
             ("Disconnecting old AG service link", self.ag_disconnect, 0.6),
             ("Disconnecting old A2DP source link", self.a2dp_source_disconnect, 0.6),
+            (f"Deleting old bond for {address}", lambda: self.unbond(address), 0.8),
             ("Enabling AG pairing mode", lambda: self.set_pairing_mode(True), 0.4),
             (f"Starting bond with {address}", lambda: self.bond(address), 1.6),
         ]
@@ -593,7 +594,31 @@ class SerialBridgeSession:
             self._log("AG profile connect skipped because the session is closed")
             return
         if self._sequence_thread is not None and self._sequence_thread.is_alive():
-            self._log("AG profile connect is waiting for the current sequence to finish")
+            current_sequence = self._sequence_thread
+            self._log("AG profile connect will start after the current pairing sequence finishes")
+            starter = threading.Thread(
+                target=self._run_ag_profile_connect_after_sequence,
+                args=(address, current_sequence),
+                name=f"ag-profile-connect-wait-{self.info.label}",
+                daemon=True,
+            )
+            starter.start()
+            return
+        self._sequence_thread = threading.Thread(
+            target=self._run_ag_profile_connect_sequence,
+            args=(address,),
+            name=f"ag-profile-connect-{self.info.label}",
+            daemon=True,
+        )
+        self._sequence_thread.start()
+
+    def _run_ag_profile_connect_after_sequence(self, address: str, current_sequence: threading.Thread) -> None:
+        current_sequence.join(timeout=6.0)
+        if current_sequence.is_alive():
+            self._log("AG profile connect skipped because the pairing sequence did not finish")
+            return
+        if self._stop_event.is_set() or not self.info.is_open:
+            self._log("AG profile connect skipped because the session closed after pairing")
             return
         self._sequence_thread = threading.Thread(
             target=self._run_ag_profile_connect_sequence,
@@ -604,27 +629,37 @@ class SerialBridgeSession:
         self._sequence_thread.start()
 
     def _run_ag_profile_connect_sequence(self, address: str) -> None:
-        steps: list[tuple[str, Callable[[], None], float]] = [
-            (f"Connecting AG profile to {address}", lambda: self.ag_connect(address), 1.0),
-            (f"Connecting A2DP source profile to {address}", lambda: self.a2dp_source_connect(address), 1.0),
-        ]
-        if self._avrc_profiles_enabled:
-            steps.append((f"Connecting AVRCP target profile to {address}", lambda: self.avrc_tg_connect(address), 1.0))
-        else:
-            self._log("AVRCP profile connect is disabled for call-flow testing")
         self._remember_remote(address)
-        self._log(f"Pairing completed; connecting AG profiles for {address}")
-        for label, action, wait_seconds in steps:
-            if self._stop_event.is_set() or not self.info.is_open:
-                self._log("AG profile connect stopped because the session was closed")
-                return
-            self._log(label)
-            action()
-            if self._stop_event.wait(wait_seconds):
-                self._log("AG profile connect interrupted while waiting for the next step")
-                return
+        self._log(f"Pairing completed; connecting AG profile first for {address}")
+
+        if self._stop_event.is_set() or not self.info.is_open:
+            self._log("AG profile connect stopped because the session was closed")
+            return
+
+        self._log(f"Connecting AG profile to {address}")
+        self.ag_connect(address)
+
+        if not self._wait_for(
+            lambda: self.info.service_handle > 0,
+            timeout_seconds=18.0,
+            label="AG service open before A2DP",
+        ):
+            self._log("AG profile did not open; skipping A2DP for this initial-connect test")
+            return
+
+        if self._stop_event.is_set() or not self.info.is_open:
+            self._log("AG profile connect stopped before A2DP because the session was closed")
+            return
+
+        self._log(f"AG service opened on handle {self.info.service_handle}; connecting A2DP source to {address}")
+        self.a2dp_source_connect(address)
+
         if self._avrc_profiles_enabled:
-            self._log("AG one-click pair finished with AG, A2DP, and AVRCP connect attempts")
+            if self._stop_event.wait(1.0):
+                self._log("AG profile connect interrupted before AVRCP")
+                return
+            self._log(f"Connecting AVRCP target profile to {address}")
+            self.avrc_tg_connect(address)
         else:
             self._log("AG one-click pair finished with AG and A2DP connect attempts (AVRCP disabled)")
 
@@ -789,7 +824,7 @@ class SerialBridgeSession:
             self._pending_ag_auto_connect_address = None
             if pending_address:
                 if packet.payload[0] == 0:
-                    self._start_ag_profile_connect_after_pair(pending_address)
+                    self._log(f"AG pairing completed for {pending_address}; firmware owns initial HFP connect")
                 else:
                     self._log(f"AG pairing failed for {pending_address}; skipping profile connects")
         elif packet.opcode == EVENT_INQUIRY_COMPLETE:

@@ -178,7 +178,14 @@ void hci_control_send_device_error_evt(uint8_t fw_error_code, uint8_t app_error_
 void hci_control_send_command_status_evt(uint16_t code, uint8_t status);
 void hci_control_send_pairing_completed_evt(uint8_t status, wiced_bt_device_address_t bdaddr);
 void hci_control_send_user_confirmation_request_evt(BD_ADDR bda, uint32_t numeric_value);
+void hci_control_send_pin_request_evt(BD_ADDR bda);
 void hci_control_send_encryption_changed_evt(uint8_t encrypted, wiced_bt_device_address_t bdaddr);
+void hci_control_send_bridge_status_line(const char *line);
+void hci_control_ag_pairing_complete(uint8_t status, wiced_bt_device_address_t bdaddr);
+void hci_control_ag_connect_profiles_for_peer(wiced_bt_device_address_t bd_addr);
+void hci_control_ag_service_opened(uint16_t handle);
+void hci_control_ag_service_connected(uint16_t handle);
+void hci_control_ag_service_closed(uint16_t handle);
 
 /* LE control interface */
 void hci_control_le_handle_command(uint16_t cmd_opcode, uint8_t* p_data, uint32_t data_len);
@@ -211,6 +218,7 @@ void hci_control_a2dp_source_audio_route_update(wiced_bt_device_address_t bd_add
 uint8_t hci_control_a2dp_source_audio_route_get(wiced_bt_device_address_t bd_addr);
 
 /* a2dp function prototypes */
+wiced_result_t av_app_initiate_sdp(BD_ADDR bda);
 wiced_result_t a2dp_app_hci_control_connect(uint8_t* p_data, uint32_t len);
 wiced_result_t a2dp_app_hci_control_disconnect(uint8_t* p_data, uint32_t len);
 wiced_result_t a2dp_app_hci_control_start(uint8_t* p_data, uint32_t len);

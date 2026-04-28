@@ -1177,6 +1177,10 @@ class BridgeApp:
                         )
                         if send_state != "dropped":
                             self._pending_car_at_responses += 1
+                            self._send_car_to_phone_bridge_line(
+                                "BR1,REJECT",
+                                "Car AG AT AT+CHLD=0 -> HF PUART semantic REJECT",
+                            )
                             self._bridge_trace("Car AG AT AT+CHLD=0 -> Phone HF raw AT AT+CHUP (reject incoming)")
                         return
                     if at_upper in {"AT+CHLD=1", "AT+CHLD=2"} and self._is_phone_incoming_call_state():
@@ -1195,6 +1199,10 @@ class BridgeApp:
                             self._pending_car_at_responses += 1
                             self._car_answer_pending = True
                             self._last_car_ata_forward_at = now
+                            self._send_car_to_phone_bridge_line(
+                                "BR1,ANSWER",
+                                f"Car AG AT {at_text} -> HF PUART semantic ANSWER",
+                            )
                             self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT ATA (answer incoming)")
                         return
                     if self._phone_hf_cind[2] != "1" or self._phone_hf_cind[3] != "0":
@@ -1226,6 +1234,10 @@ class BridgeApp:
                         self._pending_car_at_responses += 1
                         self._car_answer_pending = True
                         self._last_car_ata_forward_at = now
+                        self._send_car_to_phone_bridge_line(
+                            "BR1,ANSWER",
+                            "Car AG AT ATA -> HF PUART semantic ANSWER",
+                        )
                         self._bridge_trace("Car AG AT ATA -> Phone HF raw AT ATA")
                     return
                 if at_upper == "AT+CHUP":
@@ -1234,6 +1246,11 @@ class BridgeApp:
                         f"Car AG AT {at_text}",
                         allow_stale_handle=True,
                     )
+                    if send_state != "dropped":
+                        self._send_car_to_phone_bridge_line(
+                            "BR1,HANGUP",
+                            "Car AG AT AT+CHUP -> HF PUART semantic HANGUP",
+                        )
                 elif at_upper == "AT+CLCC":
                     self._pending_car_clcc_requests += 1
                     allow_stale_clcc = self._is_phone_incoming_call_state() or self._phone_hf_cind[2] == "1"
@@ -2083,6 +2100,26 @@ class BridgeApp:
         if info.last_status:
             status_bits.append(info.last_status)
         widgets.status_var.set(" | ".join(status_bits))
+
+        previous_selection = widgets.preferred_var.get().strip()
+        selected_indices = widgets.listbox.curselection()
+        if selected_indices and selected_indices[0] < len(widgets.devices):
+            previous_selection = widgets.devices[selected_indices[0]]
+
+        devices = sorted(
+            info.discovered_devices.values(),
+            key=lambda device: (
+                device.name.strip().lower() or "~",
+                device.address,
+            ),
+        )
+        widgets.devices = [device.address for device in devices]
+        widgets.listbox.delete(0, tk.END)
+        for index, device in enumerate(devices):
+            widgets.listbox.insert(tk.END, self._device_label(device))
+            if device.address == previous_selection:
+                widgets.listbox.selection_set(index)
+                widgets.listbox.see(index)
 
         widgets.open_button.configure(state=tk.NORMAL if not info.is_open else tk.DISABLED)
         widgets.close_button.configure(state=tk.NORMAL if info.is_open else tk.DISABLED)

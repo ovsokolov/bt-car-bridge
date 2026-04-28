@@ -249,6 +249,7 @@
 #include "hci_control_pannap.h"
 #endif
 #include "app.h"
+#include "wiced_hal_nvram.h"
 
 /*****************************************************************************
 **  Constants
@@ -256,6 +257,10 @@
 #define WICED_HS_EIR_BUF_MAX_SIZE               264
 #define KEY_INFO_POOL_BUFFER_SIZE   145 //Size of the buffer used for holding the peer device key info
 #define KEY_INFO_POOL_BUFFER_COUNT  5  //Correspond's to the number of peer devices
+#define AG_AUTORECONNECT_RETRY_SEC  10U
+#define AG_PROFILE_A2DP_DELAY_SEC   1U
+#define AG_PROFILE_A2DP_RETRY_SEC   5U
+#define AG_PROFILE_A2DP_MAX_ATTEMPTS 3U
 
 #define SECI_BAUD_RATE    2000000  // Applicable for 20719B1 and 20721B1 when Coex is used
 
@@ -352,9 +357,28 @@ static void hci_control_handle_enable_disable_coex ( wiced_bool_t enable );
 #endif
 static void hci_control_handle_read_local_bda( void );
 static void hci_control_handle_user_confirmation( uint8_t *p_bda, uint8_t accept_pairing );
+static void hci_control_handle_bond_device( uint8_t *p_bda );
+static void hci_control_handle_unbond_device( uint8_t *p_bda );
+static void hci_control_handle_pin_reply( uint8_t *p_data, uint32_t data_len );
 static void hci_control_handle_read_buffer_stats( void );
+static wiced_result_t hci_control_delete_bonded_device( wiced_bt_device_address_t bd_addr );
 static void hci_control_send_device_started_evt( void );
 static void hci_control_send_startup_snapshot( void );
+static void hci_control_auto_reconnect_retry_timer_cb( TIMER_PARAM_TYPE arg );
+static void hci_control_start_auto_reconnect_retry( void );
+static void hci_control_stop_auto_reconnect_retry( void );
+static void hci_control_auto_reconnect_bonded_peer( void );
+void hci_control_send_bridge_status_line( const char *line );
+static void hci_control_ag_a2dp_connect_timer_cb( TIMER_PARAM_TYPE arg );
+static void hci_control_ag_schedule_a2dp_connect( uint32_t delay_seconds );
+static void hci_control_ag_cancel_a2dp_connect( void );
+static void hci_control_ag_pause_autoreconnect_for_manual_pair( void );
+static void hci_control_connection_status_cb( wiced_bt_device_address_t bd_addr,
+                                              uint8_t *p_features,
+                                              wiced_bool_t is_connected,
+                                              uint16_t handle,
+                                              wiced_bt_transport_t transport,
+                                              uint8_t reason );
 extern void hci_control_misc_handle_get_version( void );
 extern wiced_result_t wiced_bt_avrc_ct_cleanup( void );
 extern uint8_t find_index_by_conn_id(uint16_t conn_id);
@@ -365,6 +389,21 @@ static void hci_control_sleep_configure(void);
 /******************************************************************************
  *                                Variable/Structure/type Definitions
  ******************************************************************************/
+
+static wiced_timer_t ag_autoreconnect_retry_timer;
+static wiced_bool_t ag_autoreconnect_retry_timer_initialized = WICED_FALSE;
+static wiced_bool_t ag_autoreconnect_retry_active = WICED_FALSE;
+static wiced_bool_t ag_br_edr_connected = WICED_FALSE;
+static wiced_bool_t ag_manual_inquiry_active = WICED_FALSE;
+static wiced_bool_t ag_manual_pair_active = WICED_FALSE;
+static wiced_timer_t ag_a2dp_connect_timer;
+static wiced_bool_t ag_a2dp_connect_timer_initialized = WICED_FALSE;
+static wiced_bool_t ag_a2dp_connect_pending = WICED_FALSE;
+static wiced_bool_t ag_a2dp_connected = WICED_FALSE;
+static wiced_bool_t ag_hfp_connect_pending = WICED_FALSE;
+static uint8_t ag_a2dp_connect_attempts = 0;
+static uint8_t ag_profile_peer_addr[BD_ADDR_LEN];
+static uint8_t ag_profile_connect_addr[BD_ADDR_LEN];
 
 
 /******************************************************
@@ -418,9 +457,11 @@ void hci_control_post_init(void)
 #endif
 #endif
 #ifdef WICED_APP_HFP_AG_INCLUDED
+    hci_control_send_bridge_status_line("INIT:HFP_AG");
     hci_control_ag_init();
 #endif
 #ifdef WICED_APP_HFP_HF_INCLUDED
+    hci_control_send_bridge_status_line("INIT:HFP_HF");
     hci_control_hf_init();
 #endif
 
@@ -438,6 +479,18 @@ void hci_control_post_init(void)
 
     if (p_key_info_pool == NULL)
         WICED_BT_TRACE("Err: wiced_bt_create_pool failed\n");
+    else
+        app_restore_nvram();
+
+    hci_control_cb.pairing_allowed = WICED_TRUE;
+    wiced_bt_set_pairable_mode( hci_control_cb.pairing_allowed, 0 );
+    wiced_bt_dev_set_discoverability( BTM_GENERAL_DISCOVERABLE,
+                                      BTM_DEFAULT_DISC_WINDOW,
+                                      BTM_DEFAULT_DISC_INTERVAL );
+    wiced_bt_dev_set_connectability( WICED_TRUE,
+                                     BTM_DEFAULT_CONN_WINDOW,
+                                     BTM_DEFAULT_CONN_INTERVAL );
+    hci_control_send_bridge_status_line("BOOT:connectable pairable discoverable");
 
 #if (defined(SLEEP_SUPPORTED) && (SLEEP_SUPPORTED == WICED_TRUE))
     hci_control_sleep_configure();
@@ -462,6 +515,280 @@ void hci_control_post_init(void)
 #ifdef AUTO_EPA_SWITCH
     wiced_hal_rfm_auto_epa_enable(1, TX_PU);
 #endif
+}
+
+void hci_control_send_bridge_status_line( const char *line )
+{
+    uint16_t len = (uint16_t)strlen(line);
+
+    wiced_transport_send_data( (HCI_CONTROL_GROUP_MISC << 8) | 0x25,
+                               (uint8_t *)line,
+                               len );
+}
+
+static void hci_control_auto_reconnect_retry_timer_cb( TIMER_PARAM_TYPE arg )
+{
+    UNUSED_VARIABLE(arg);
+    hci_control_auto_reconnect_bonded_peer();
+}
+
+static void hci_control_start_auto_reconnect_retry( void )
+{
+    if ( ag_autoreconnect_retry_active )
+    {
+        return;
+    }
+
+    if ( ag_autoreconnect_retry_timer_initialized == WICED_FALSE )
+    {
+        wiced_init_timer( &ag_autoreconnect_retry_timer,
+                          hci_control_auto_reconnect_retry_timer_cb,
+                          0,
+                          WICED_SECONDS_PERIODIC_TIMER );
+        ag_autoreconnect_retry_timer_initialized = WICED_TRUE;
+    }
+
+    ag_autoreconnect_retry_active = WICED_TRUE;
+    wiced_start_timer( &ag_autoreconnect_retry_timer, AG_AUTORECONNECT_RETRY_SEC );
+    hci_control_send_bridge_status_line( "AUTORECONNECT:retry scheduled" );
+}
+
+static void hci_control_stop_auto_reconnect_retry( void )
+{
+    if ( ag_autoreconnect_retry_active == WICED_FALSE )
+    {
+        return;
+    }
+
+    ag_autoreconnect_retry_active = WICED_FALSE;
+
+    if ( ag_autoreconnect_retry_timer_initialized == WICED_TRUE )
+    {
+        wiced_stop_timer( &ag_autoreconnect_retry_timer );
+    }
+
+    hci_control_send_bridge_status_line( "AUTORECONNECT:link restored stop retry" );
+}
+
+static void hci_control_auto_reconnect_bonded_peer( void )
+{
+    hci_control_nvram_chunk_t *p1 = p_nvram_first;
+
+    if ( p1 == NULL )
+    {
+        hci_control_send_bridge_status_line("AUTORECONNECT:no bonded peer");
+        hci_control_stop_auto_reconnect_retry();
+        return;
+    }
+
+    if ( ag_br_edr_connected )
+    {
+        hci_control_stop_auto_reconnect_retry();
+        return;
+    }
+
+    if ( ag_manual_inquiry_active )
+    {
+        hci_control_send_bridge_status_line("AUTORECONNECT:paused for inquiry");
+        hci_control_stop_auto_reconnect_retry();
+        return;
+    }
+
+    if ( ag_manual_pair_active )
+    {
+        hci_control_send_bridge_status_line("AUTORECONNECT:paused for manual pair");
+        hci_control_stop_auto_reconnect_retry();
+        return;
+    }
+
+    if ( ag_hfp_connect_pending )
+    {
+        hci_control_send_bridge_status_line("AUTORECONNECT:HFP_AG pending skip");
+        return;
+    }
+
+    hci_control_send_bridge_status_line("AUTORECONNECT:attempt profiles");
+    hci_control_ag_connect_profiles_for_peer( p1->data );
+
+    hci_control_start_auto_reconnect_retry();
+}
+
+void hci_control_ag_connect_profiles_for_peer( wiced_bt_device_address_t bd_addr )
+{
+    uint8_t i;
+
+    memcpy( ag_profile_peer_addr, bd_addr, BD_ADDR_LEN );
+
+    for ( i = 0; i < BD_ADDR_LEN; i++ )
+    {
+        ag_profile_connect_addr[i] = bd_addr[BD_ADDR_LEN - 1 - i];
+    }
+
+    ag_a2dp_connected = WICED_FALSE;
+    ag_a2dp_connect_pending = WICED_TRUE;
+    ag_a2dp_connect_attempts = 0;
+
+#ifdef WICED_APP_HFP_AG_INCLUDED
+    hci_control_send_bridge_status_line("PROFILE:connect HFP_AG");
+    hci_control_switch_hfp_role( HFP_AUDIO_GATEWAY_ROLE );
+    ag_hfp_connect_pending = WICED_TRUE;
+    hfp_ag_connect( ag_profile_connect_addr );
+#endif
+
+    hci_control_send_bridge_status_line("PROFILE:wait HFP_AG connected");
+    hci_control_send_bridge_status_line("PROFILE:start A2DP_SRC with HFP_AG");
+    hci_control_ag_a2dp_connect_timer_cb( 0 );
+}
+
+static void hci_control_ag_schedule_a2dp_connect( uint32_t delay_seconds )
+{
+    if ( ag_a2dp_connect_timer_initialized == WICED_FALSE )
+    {
+        wiced_init_timer( &ag_a2dp_connect_timer,
+                          hci_control_ag_a2dp_connect_timer_cb,
+                          0,
+                          WICED_SECONDS_TIMER );
+        ag_a2dp_connect_timer_initialized = WICED_TRUE;
+    }
+
+    wiced_stop_timer( &ag_a2dp_connect_timer );
+    wiced_start_timer( &ag_a2dp_connect_timer, delay_seconds );
+    hci_control_send_bridge_status_line("PROFILE:schedule A2DP_SRC");
+}
+
+static void hci_control_ag_cancel_a2dp_connect( void )
+{
+    ag_a2dp_connect_pending = WICED_FALSE;
+    ag_a2dp_connected = WICED_FALSE;
+    ag_a2dp_connect_attempts = 0;
+
+    if ( ag_a2dp_connect_timer_initialized == WICED_TRUE )
+    {
+        wiced_stop_timer( &ag_a2dp_connect_timer );
+    }
+}
+
+static void hci_control_ag_pause_autoreconnect_for_manual_pair( void )
+{
+    ag_manual_pair_active = WICED_TRUE;
+    ag_hfp_connect_pending = WICED_FALSE;
+    hci_control_ag_cancel_a2dp_connect();
+    hci_control_stop_auto_reconnect_retry();
+    hf_autoreconnect_cancel();
+    hci_control_send_bridge_status_line("PAIR:manual pause autoreconnect");
+}
+
+void hci_control_ag_service_opened( uint16_t handle )
+{
+    UNUSED_VARIABLE(handle);
+
+    ag_hfp_connect_pending = WICED_FALSE;
+    hci_control_stop_auto_reconnect_retry();
+    hf_autoreconnect_hfp_opened();
+    hci_control_send_bridge_status_line("PROFILE:HFP_AG open");
+}
+
+void hci_control_ag_service_connected( uint16_t handle )
+{
+    UNUSED_VARIABLE(handle);
+
+    ag_hfp_connect_pending = WICED_FALSE;
+    hci_control_stop_auto_reconnect_retry();
+    hf_autoreconnect_hfp_opened();
+    hci_control_send_bridge_status_line("PROFILE:HFP_AG connected");
+
+    if ( ( ag_a2dp_connect_pending == WICED_TRUE ) &&
+         ( ag_a2dp_connected == WICED_FALSE ) &&
+         ( ag_a2dp_connect_attempts == 0 ) )
+    {
+        hci_control_send_bridge_status_line("PROFILE:HFP_AG connected; queue A2DP_SRC fallback");
+        hci_control_ag_schedule_a2dp_connect( AG_PROFILE_A2DP_DELAY_SEC );
+    }
+}
+
+void hci_control_ag_service_closed( uint16_t handle )
+{
+    UNUSED_VARIABLE(handle);
+    ag_hfp_connect_pending = WICED_FALSE;
+    hci_control_ag_cancel_a2dp_connect();
+    hci_control_send_bridge_status_line("PROFILE:HFP_AG closed");
+}
+
+static void hci_control_ag_a2dp_connect_timer_cb( TIMER_PARAM_TYPE arg )
+{
+    wiced_result_t result;
+
+    UNUSED_VARIABLE(arg);
+
+    if ( ( ag_a2dp_connect_pending == WICED_FALSE ) || ag_a2dp_connected )
+    {
+        return;
+    }
+
+    if ( ag_a2dp_connect_attempts >= AG_PROFILE_A2DP_MAX_ATTEMPTS )
+    {
+        ag_a2dp_connect_pending = WICED_FALSE;
+        hci_control_send_bridge_status_line("PROFILE:A2DP_SRC retries exhausted");
+        return;
+    }
+
+    ag_a2dp_connect_attempts++;
+    hci_control_send_bridge_status_line("PROFILE:connect A2DP_SRC");
+
+#ifdef WICED_APP_AUDIO_SRC_INCLUDED
+    result = av_app_initiate_sdp( ag_profile_peer_addr );
+#else
+    result = WICED_ERROR;
+#endif
+
+    if ( result != WICED_SUCCESS )
+    {
+        hci_control_send_bridge_status_line("PROFILE:A2DP_SRC connect busy retry");
+        hci_control_ag_schedule_a2dp_connect( AG_PROFILE_A2DP_RETRY_SEC );
+    }
+}
+
+static void hci_control_connection_status_cb( wiced_bt_device_address_t bd_addr,
+                                              uint8_t *p_features,
+                                              wiced_bool_t is_connected,
+                                              uint16_t handle,
+                                              wiced_bt_transport_t transport,
+                                              uint8_t reason )
+{
+    UNUSED_VARIABLE(bd_addr);
+    UNUSED_VARIABLE(p_features);
+    UNUSED_VARIABLE(handle);
+    UNUSED_VARIABLE(reason);
+
+    if ( transport == BT_TRANSPORT_BR_EDR )
+    {
+        ag_br_edr_connected = is_connected;
+
+        if ( is_connected )
+        {
+            hci_control_send_bridge_status_line( "AUTORECONNECT:BR_EDR link up" );
+            hci_control_stop_auto_reconnect_retry();
+        }
+        else
+        {
+            hci_control_ag_cancel_a2dp_connect();
+            if ( ag_manual_pair_active )
+            {
+                hci_control_send_bridge_status_line( "AUTORECONNECT:link down ignored during manual pair" );
+            }
+            else if ( ag_hfp_connect_pending )
+            {
+                hci_control_send_bridge_status_line( "AUTORECONNECT:BR_EDR down while HFP pending" );
+                ag_hfp_connect_pending = WICED_FALSE;
+                hci_control_start_auto_reconnect_retry();
+            }
+            else
+            {
+                hci_control_send_bridge_status_line( "AUTORECONNECT:BR_EDR link down retry scheduled" );
+                hci_control_start_auto_reconnect_retry();
+            }
+        }
+    }
 }
 
 #if (defined(SLEEP_SUPPORTED) && (SLEEP_SUPPORTED == WICED_TRUE))
@@ -958,6 +1285,19 @@ void hci_control_device_handle_command( uint16_t cmd_opcode, uint8_t* p_data, ui
         hci_control_handle_user_confirmation( p_data, p_data[6] );
         break;
 
+    case HCI_CONTROL_COMMAND_BOND:
+        hci_control_handle_bond_device( p_data );
+        break;
+
+    case HCI_CONTROL_COMMAND_UNBOND:
+    case HCI_CONTROL_COMMAND_UNBOND_DEVICE:
+        hci_control_handle_unbond_device( p_data );
+        break;
+
+    case HCI_CONTROL_COMMAND_PIN_REPLY:
+        hci_control_handle_pin_reply( p_data, data_len );
+        break;
+
     case HCI_CONTROL_COMMAND_READ_BUFF_STATS:
         hci_control_handle_read_buffer_stats ();
         break;
@@ -1049,7 +1389,9 @@ void hci_control_inquiry_result_cback( wiced_bt_dev_inquiry_scan_result_t *p_inq
     if ( p_inquiry_result == NULL )
     {
         code = HCI_CONTROL_EVENT_INQUIRY_COMPLETE;
+        ag_manual_inquiry_active = WICED_FALSE;
         WICED_BT_TRACE( "inquiry complete \n");
+        hci_control_send_bridge_status_line("INQUIRY:complete");
     }
     else
     {
@@ -1088,6 +1430,8 @@ void hci_control_inquiry( uint8_t enable )
 
     if ( enable )
     {
+        ag_manual_inquiry_active = WICED_TRUE;
+        hci_control_stop_auto_reconnect_retry();
 
         memset( &params, 0, sizeof( params ) );
 
@@ -1097,13 +1441,26 @@ void hci_control_inquiry( uint8_t enable )
 
         result = wiced_bt_start_inquiry( &params, &hci_control_inquiry_result_cback );
         WICED_BT_TRACE( "inquiry started:%d\n", result );
+        if ( ( result == WICED_BT_PENDING ) || ( result == WICED_BT_SUCCESS ) )
+        {
+            hci_control_send_bridge_status_line("INQUIRY:start");
+        }
+        else
+        {
+            ag_manual_inquiry_active = WICED_FALSE;
+            hci_control_send_bridge_status_line("INQUIRY:start failed");
+        }
     }
     else
     {
+        ag_manual_inquiry_active = WICED_FALSE;
         result = wiced_bt_cancel_inquiry( );
         WICED_BT_TRACE( "cancel inquiry:%d\n", result );
+        hci_control_send_bridge_status_line("INQUIRY:stop");
     }
-    hci_control_send_command_status_evt( HCI_CONTROL_EVENT_COMMAND_STATUS, HCI_CONTROL_STATUS_SUCCESS );
+    hci_control_send_command_status_evt( HCI_CONTROL_EVENT_COMMAND_STATUS,
+                                         ( ( result == WICED_BT_PENDING ) || ( result == WICED_BT_SUCCESS ) ) ?
+                                         HCI_CONTROL_STATUS_SUCCESS : HCI_CONTROL_STATUS_FAILED );
 }
 
 /*
@@ -1213,6 +1570,102 @@ void hci_control_handle_user_confirmation( uint8_t *p_bda, uint8_t accept_pairin
 }
 
 /*
+ *  Handle Bond Device received over HCI UART.
+ */
+static void hci_control_handle_bond_device( uint8_t *p_bda )
+{
+    wiced_bt_device_address_t bd_addr;
+    wiced_result_t result;
+
+    STREAM_TO_BDADDR( bd_addr, p_bda );
+
+    hci_control_ag_pause_autoreconnect_for_manual_pair();
+    hci_control_send_bridge_status_line( "PAIR:bond start" );
+    result = wiced_bt_dev_sec_bond( bd_addr, 0, BT_TRANSPORT_BR_EDR, 0, NULL );
+
+    if ( ( result != WICED_BT_SUCCESS ) && ( result != WICED_BT_PENDING ) )
+    {
+        hci_control_send_bridge_status_line( "PAIR:bond start failed" );
+    }
+
+    hci_control_send_command_status_evt(
+        HCI_CONTROL_EVENT_COMMAND_STATUS,
+        ( ( result == WICED_BT_SUCCESS ) || ( result == WICED_BT_PENDING ) ) ?
+            HCI_CONTROL_STATUS_SUCCESS : HCI_CONTROL_STATUS_FAILED );
+}
+
+void hci_control_ag_pairing_complete( uint8_t status, wiced_bt_device_address_t bd_addr )
+{
+    UNUSED_VARIABLE(bd_addr);
+    ag_manual_pair_active = WICED_FALSE;
+
+    if ( status == WICED_BT_SUCCESS )
+    {
+        hci_control_send_bridge_status_line( "PAIR:complete; wiced_app owns reconnect" );
+    }
+    else
+    {
+        hci_control_send_bridge_status_line( "PAIR:complete failed" );
+    }
+}
+
+/*
+ *  Handle Unbond Device received over HCI UART.
+ */
+static void hci_control_handle_unbond_device( uint8_t *p_bda )
+{
+    wiced_bt_device_address_t bd_addr;
+    wiced_result_t result;
+
+    STREAM_TO_BDADDR( bd_addr, p_bda );
+
+    hci_control_ag_pause_autoreconnect_for_manual_pair();
+    hci_control_send_bridge_status_line( "PAIR:unbond selected" );
+    result = hci_control_delete_bonded_device( bd_addr );
+
+    hci_control_send_command_status_evt(
+        HCI_CONTROL_EVENT_COMMAND_STATUS,
+        ( result == WICED_BT_SUCCESS ) ? HCI_CONTROL_STATUS_SUCCESS : HCI_CONTROL_STATUS_FAILED );
+}
+
+static void hci_control_handle_pin_reply( uint8_t *p_data, uint32_t data_len )
+{
+    wiced_bt_device_address_t bd_addr;
+    uint8_t pin_len;
+
+    if ( ( p_data == NULL ) || ( data_len < 7 ) )
+    {
+        hci_control_send_command_status_evt( HCI_CONTROL_EVENT_COMMAND_STATUS, HCI_CONTROL_STATUS_INVALID_ARGS );
+        return;
+    }
+
+    STREAM_TO_BDADDR( bd_addr, p_data );
+    pin_len = p_data[6];
+
+    if ( ( pin_len == 0 ) || ( pin_len > WICED_PIN_CODE_LEN ) || ( data_len < (uint32_t)( 7 + pin_len ) ) )
+    {
+        hci_control_send_command_status_evt( HCI_CONTROL_EVENT_COMMAND_STATUS, HCI_CONTROL_STATUS_INVALID_ARGS );
+        return;
+    }
+
+    wiced_bt_dev_pin_code_reply( bd_addr, WICED_BT_SUCCESS, pin_len, &p_data[7] );
+    hci_control_send_command_status_evt( HCI_CONTROL_EVENT_COMMAND_STATUS, HCI_CONTROL_STATUS_SUCCESS );
+}
+
+void hci_control_send_pin_request_evt( BD_ADDR bda )
+{
+    uint8_t event_data[6];
+    int i;
+
+    for ( i = 0; i < 6; i++ )
+    {
+        event_data[i] = bda[5 - i];
+    }
+
+    wiced_transport_send_data( HCI_CONTROL_EVENT_PIN_REQUEST, event_data, sizeof(event_data) );
+}
+
+/*
  *  Send Device Started event through UART
  */
 void hci_control_send_device_started_evt( void )
@@ -1318,6 +1771,14 @@ wiced_result_t hci_control_audio_send_connect_complete( wiced_bt_device_address_
     //Build event payload
     if ( status == WICED_SUCCESS )
     {
+        ag_a2dp_connected = WICED_TRUE;
+        ag_a2dp_connect_pending = WICED_FALSE;
+        if ( ag_a2dp_connect_timer_initialized == WICED_TRUE )
+        {
+            wiced_stop_timer( &ag_a2dp_connect_timer );
+        }
+        hci_control_send_bridge_status_line("PROFILE:A2DP_SRC connected");
+
         for ( i = 0; i < BD_ADDR_LEN; i++ )                     // bd address
             event_data[i] = bd_addr[BD_ADDR_LEN - 1 - i];
 
@@ -1331,7 +1792,18 @@ wiced_result_t hci_control_audio_send_connect_complete( wiced_bt_device_address_
     }
     else
     {
-        return wiced_transport_send_data( HCI_CONTROL_AUDIO_EVENT_CONNECTION_FAILED, NULL, 0 );
+        event_data[0] = (uint8_t)status;
+        event_data[1] = 0xFF;
+        event_data[2] = handle & 0xff;
+        event_data[3] = ( handle >> 8 ) & 0xff;
+        hci_control_send_bridge_status_line("PROFILE:A2DP_SRC connection failed detail");
+        ag_a2dp_connected = WICED_FALSE;
+        if ( ag_a2dp_connect_pending == WICED_TRUE )
+        {
+            hci_control_send_bridge_status_line("PROFILE:A2DP_SRC failed retry");
+            hci_control_ag_schedule_a2dp_connect( AG_PROFILE_A2DP_RETRY_SEC );
+        }
+        return wiced_transport_send_data( HCI_CONTROL_AUDIO_EVENT_CONNECTION_FAILED, event_data, 4 );
     }
 }
 
@@ -1343,6 +1815,7 @@ wiced_result_t hci_control_audio_send_disconnect_complete( uint16_t handle, uint
     uint8_t event_data[4];
 
     WICED_BT_TRACE( "[%s] %04x status %d reason %d\n", __FUNCTION__, handle, status, reason );
+    ag_a2dp_connected = WICED_FALSE;
 
     //Build event payload
     event_data[0] = handle & 0xff;                          //handle
@@ -1528,6 +2001,13 @@ static wiced_result_t hci_control_delete_bonded_device(wiced_bt_device_address_t
 void hci_control_delete_nvram( int nvram_id, wiced_bool_t from_host )
 {
     hci_control_nvram_chunk_t *p1, *p2;
+    wiced_result_t result;
+
+    if ( nvram_id >= HCI_CONTROL_FIRST_VALID_NVRAM_ID )
+    {
+        wiced_hal_delete_nvram( nvram_id, &result );
+        WICED_BT_TRACE("Local NVRAM delete:id:%d status:%d\n", nvram_id, result);
+    }
 
     /* If Delete NVRAM data command arrived from host, send a Command Status response to ack command */
     if (from_host)

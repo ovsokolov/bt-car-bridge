@@ -64,6 +64,7 @@ wiced_result_t  app_stack_init( void );
 wiced_result_t  app_read_buffer_stats( void );
 void            app_pr_dev_started_evt();
 int             app_write_nvram( int nvram_id, int data_len, void *p_data, wiced_bool_t from_host );
+int             app_restore_nvram( void );
 void            app_btu_hcif_send_cmd( uint16_t opcode, uint8_t* params, uint8_t params_length );
 uint32_t        app_copy_advertisement_data( uint8_t *p_adv_data, uint8_t * buff, uint32_t buff_len );
 void            app_paired_device_link_keys_update( wiced_bt_management_evt_data_t *p_event_data );
