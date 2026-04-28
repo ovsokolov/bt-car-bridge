@@ -771,6 +771,7 @@ Useful early ideas:
   - Car PUART `BR1,...` lines relay to Phone PUART
   - manual `Peer Hello` buttons send `BR1,HELLO,AG` into Phone PUART and `BR1,HELLO,HF` into Car PUART
 - current lab rule: the UI is the active PUART relay until explicitly switching to physical crosswire
+- Phase 2.1 staging keeps that same rule: the UI maps phone-side HFP events to `BR1,INCOMING`, `BR1,CID`, `BR1,ACTIVE`, `BR1,ENDED`, and audio state lines, then writes them into the AG/Car PUART port
 
 ## Commit Naming Convention
 

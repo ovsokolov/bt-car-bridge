@@ -240,3 +240,27 @@ If work resumes later, start here:
   - Phase 1 PUART transport skeleton is working bidirectionally through the UI relay
 - Next step:
   - start sending semantic bridge messages over the same UI-relayed PUART path
+
+## TEST-20260428-06
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Phase 2.1 semantic HFP messages over UI-relayed PUART
+- Board(s): HF and AG
+- Transport rule:
+  - UI remains the active PUART relay/pusher
+  - physical crosswire is not assumed
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+- Procedure:
+  - on phone-side HFP call state transition to incoming, push `BR1,INCOMING[,number]` to Car PUART
+  - on phone-side CLIP, push `BR1,CID,<number>` to Car PUART
+  - on phone-side active call state, push `BR1,ACTIVE` to Car PUART
+  - on phone-side return to idle, push `BR1,ENDED` to Car PUART
+  - on phone-side HF audio callbacks, push `BR1,AUDIO_OPEN` / `BR1,AUDIO_CLOSE` to Car PUART
+- Expected result:
+  - AG HCI pane confirms semantic lines as `[RECEIVED over PUART] BR1,<message>`
+  - Bridge Trace shows each UI push reason and target `car_trace`
+- Actual result:
+  - code staged
+  - `python -m py_compile` passed for `ui.py`
+- Status: `READY_FOR_HARDWARE_TEST`

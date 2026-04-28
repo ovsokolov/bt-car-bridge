@@ -860,9 +860,11 @@ class BridgeApp:
         if opcode_value == EVENT_HF_AUDIO_OPEN:
             # Audio open alone is not a reliable "active call" signal on all stacks.
             # Keep call state driven by +CIEV/+CLCC to avoid sticky call=1 and AVRCP suppression.
+            self._send_phone_to_car_bridge_line("BR1,AUDIO_OPEN", "Phone HF audio open -> AG PUART semantic AUDIO_OPEN")
             self._bridge_ag_audio("open")
             return
         if opcode_value == EVENT_HF_AUDIO_CLOSE:
+            self._send_phone_to_car_bridge_line("BR1,AUDIO_CLOSE", "Phone HF audio close -> AG PUART semantic AUDIO_CLOSE")
             self._bridge_ag_audio("close")
             return
         if opcode_value < EVENT_HF_AT_BASE or opcode_value >= opcode(GROUP_HF, 0x40):
@@ -903,6 +905,7 @@ class BridgeApp:
             clip_number = self._normalize_clip_number(text)
             self._last_clip_number = clip_number
             self._last_clip_type = str(number if number > 0 else 129)
+            self._send_phone_to_car_bridge_line(f"BR1,CID,{clip_number}", f"Phone HF CLIP {clip_number} -> AG PUART semantic CID")
             clip = f'+CLIP: "{clip_number}",{number}'
             self._send_car_result(clip, f"Phone HF CLIP {text}/{number} -> Car AG {clip}")
         elif event_code == 0x0A and text:
@@ -1216,6 +1219,24 @@ class BridgeApp:
         self.car_session.ag_send_string(text)
         self._bridge_trace(trace)
 
+    def _send_phone_to_car_bridge_line(self, line: str, reason: str) -> None:
+        self._send_bridge_protocol_line("car_trace", line, reason)
+
+    def _send_car_to_phone_bridge_line(self, line: str, reason: str) -> None:
+        self._send_bridge_protocol_line("phone_trace", line, reason)
+
+    def _send_bridge_protocol_line(self, target_key: str, line: str, reason: str) -> None:
+        clean_line = line.strip()
+        if not clean_line.startswith("BR1,"):
+            self._bridge_trace(f"Skipped malformed PUART semantic line from {reason}: {clean_line}")
+            return
+        target_session = self.trace_sessions[target_key]
+        if not target_session.info.is_open:
+            self._bridge_trace(f"Skipped PUART semantic {clean_line}: {target_key} is closed ({reason})")
+            return
+        if target_session.send_line(clean_line):
+            self._bridge_trace(f"{reason}: pushed {clean_line} to {target_key}")
+
     def _flush_pending_car_results(self) -> None:
         if self.car_session.info.service_handle <= 0 or not self._pending_car_results:
             return
@@ -1348,9 +1369,20 @@ class BridgeApp:
         self._phone_call_state = new_state
         self._bridge_trace(f"Phone call state {old_state} -> {new_state} ({reason})")
         if new_state == CALL_STATE_INCOMING:
+            if self._last_clip_number:
+                self._send_phone_to_car_bridge_line(
+                    f"BR1,INCOMING,{self._last_clip_number}",
+                    f"{reason} -> AG PUART semantic INCOMING with caller ID",
+                )
+            else:
+                self._send_phone_to_car_bridge_line("BR1,INCOMING", f"{reason} -> AG PUART semantic INCOMING")
             self._ensure_incoming_fallback_ring_refresh()
         else:
             self._cancel_incoming_fallback_ring_refresh()
+        if new_state == CALL_STATE_ACTIVE:
+            self._send_phone_to_car_bridge_line("BR1,ACTIVE", f"{reason} -> AG PUART semantic ACTIVE")
+        elif new_state == CALL_STATE_IDLE and old_state != CALL_STATE_IDLE:
+            self._send_phone_to_car_bridge_line("BR1,ENDED", f"{reason} -> AG PUART semantic ENDED")
 
     def _ensure_incoming_fallback_ring_refresh(self) -> None:
         if self._incoming_fallback_ring_after_id is not None:
