@@ -38,9 +38,9 @@
                                         <Field>
                                             <FieldProperties>
                                                 <Property id="Name" value="Name"/>
-                                                <Property id="Value" value="Watch"/>
+                                                <Property id="Value" value="NavTool-CarConnect"/>
                                                 <Property id="Format" value="f_utf8s"/>
-                                                <Property id="ByteLength" value="5"/>
+                                                <Property id="ByteLength" value="18"/>
                                             </FieldProperties>
                                         </Field>
                                     </Fields>
@@ -371,7 +371,7 @@
         <General>
             <Property id="DeviceAddress" value="000000-000000"/>
             <Property id="MacGeneratedAddress" value="false"/>
-            <Property id="DeviceName" value="Watch"/>
+            <Property id="DeviceName" value="NavTool-CarConnect"/>
             <Property id="Appearance" value="512"/>
             <Property id="HostTxPowerLevel" value="Pos_12"/>
             <Property id="EnableRpaTimeout" value="false"/>

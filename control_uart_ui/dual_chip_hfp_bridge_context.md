@@ -20,6 +20,7 @@ Confirmed HF side:
 
 - active base: `Audio_Headset_Standalone`
 - identity: `NavTool-PhoneConnect-HFTEST6-S3-AI00`
+- intended Bluetooth advertised/local name: `NavTool-PhoneConnect`
 - local BDA observed: `20:70:6A:20:D3:3F`
 - profiles observed: `LE+A2DP_SINK+AVRCP_CT+AVRCP_TG+HFP_HF`
 - audio buffer role observed: `A2DP_SINK|HF`, role byte `0x0C`
@@ -29,6 +30,7 @@ Confirmed AG side:
 
 - active base: local `Audio_Watch`
 - identity: `NavTool-CarConnect-AGTEST1-S3-AI00`
+- intended Bluetooth advertised/local name: `NavTool-CarConnect`
 - local BDA observed: `20:70:6A:20:D3:40`
 - profiles observed: `LE+A2DP_SRC+AVRCP_CT+AVRCP_TG+HFP_AG`
 - audio buffer role observed: `A2DP_SRC`, role byte `0x02`
@@ -42,6 +44,11 @@ Current Phase 1.3/2.1 code staged:
 - `control_uart_ui` decodes `0xFF25` as `Bridge PUART ...`
 - debug trace is no longer intentionally routed to PUART on these Phase 1.3 paths
 - firmware no longer sends periodic `BR1,HELLO` lines; use the UI PUART Trace pane `Peer Hello` or `Send Line` controls for manual tests
+- UI board identity guards accept expected prefixes with firmware test suffixes, for example `NavTool-PhoneConnect-HFTEST6-S3-AI00`
+- HF discoverable/pairing is controlled through the headset sample's button emulator path, not generic device visibility commands:
+  - command `HCI_CONTROL_HCI_AUDIO_COMMAND_BUTTON` / opcode `0x2930`
+  - payload `00 10 00` = `PLAY_PAUSE_BUTTON`, `BUTTON_VERY_LONG_DURATION_EVENT`, `BUTTON_STATE_HELD`
+  - equivalent to long-press SW15 on the headset sample
 
 Next lab test:
 
@@ -768,9 +775,21 @@ Useful early ideas:
 - while the boards are not physically cross-wired, use the UI PUART Trace tab as the software patch cable:
   - Phone PUART `BR1,...` lines relay to Car PUART
   - Car PUART `BR1,...` lines relay to Phone PUART
+  - `Inject Into Board` writes into the board connected to that PUART pane, so the same board should report `[RECEIVED over PUART]`
+  - `Send To Other Board` writes the line into the opposite board PUART, so the other board should report `[RECEIVED over PUART]`
   - manual `Peer Hello` buttons send `BR1,HELLO,AG` into Phone PUART and `BR1,HELLO,HF` into Car PUART
 - current lab rule: the UI is the active PUART relay until explicitly switching to physical crosswire
 - Phase 2.1 staging keeps that same rule: the UI maps phone-side HFP events to `BR1,INCOMING`, `BR1,CID`, `BR1,ACTIVE`, `BR1,ENDED`, and audio state lines, then writes them into the AG/Car PUART port
+- UI incoming-call stability guard: process at most `25` queued events per Tk tick, batch text-log rendering every `50 ms`, keep text logs capped at `2500` lines, avoid duplicating raw HCI side logs into Bridge Trace, and use `write_timeout=0.2` plus a serial worker queue for PUART/Car AG writes so call-event bursts cannot pin the UI indefinitely
+- Current HF image can wrap phone/HF AT text (`RING`, `+CLIP`, `+CIEV`, `+CIND`) inside opcode `0x0003`; UI must parse that wrapped text path as well as the normal `0x03xx` HF AT event path
+- UI suppresses all-zero `0x2902` and `0x140A` audio payload packets because they can flood the UI log during call/audio activity without carrying bridge state
+- In the wrapped-HCI path, observed `+CIEV: 2,1` means incoming setup (`BR1,INCOMING`) and `+CIEV: 1,1` means active call (`BR1,ACTIVE`); a following `+CIEV: 2,0` means setup completed if call is already active, not ended
+- In the wrapped-HCI path, observed `+CIEV: 1,0` means call ended (`BR1,ENDED`)
+- UI suppresses duplicate `BR1,CID,<number>` while the same incoming call remains active, because the phone repeats `RING/+CLIP` every few seconds
+- Ringing is represented separately from caller ID: UI sends `BR1,RING` on every phone `RING` repeat, while `BR1,CID,<number>` remains one-shot per incoming call
+- `BR1,INCOMING` is guarded by its own `_incoming_bridge_sent` one-shot latch, not only by `_phone_call_state`, because the UI can already be in incoming state before a later wrapped `RING`/`+CIEV: 2,1` arrives; reset the latch on idle/ended
+- The `BR1,INCOMING` latch should only be set after the target PUART write is queued; if the first incoming trigger happens before the AG PUART side is writable, retry before `BR1,CID`
+- Firmware HCI confirmation of PUART RX uses event `0xFF25`; both HF and AG firmware queue up to 8 received PUART lines before the 1-second HCI flush so bursts like `INCOMING` + `RING` + `CID` do not overwrite each other
 
 ## Commit Naming Convention
 
@@ -796,6 +815,7 @@ Guidelines:
 - keep the title short and action-oriented
 - if a phase has multiple implementation steps, use `X.Y`
 - if useful, add validation notes in the commit body
+- current workflow rule: do not commit or push new changes until the user confirms the hardware/software test passed
 
 Preferred commit body structure when needed:
 

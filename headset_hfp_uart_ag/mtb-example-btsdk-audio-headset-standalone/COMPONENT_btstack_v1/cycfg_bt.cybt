@@ -28,9 +28,9 @@
                                         <Field>
                                             <FieldProperties>
                                                 <Property id="Name" value="Name"/>
-                                                <Property id="Value" value="Watch"/>
+                                                <Property id="Value" value="NavTool-CarConnect"/>
                                                 <Property id="Format" value="f_utf8s"/>
-                                                <Property id="ByteLength" value="5"/>
+                                                <Property id="ByteLength" value="18"/>
                                             </FieldProperties>
                                         </Field>
                                     </Fields>

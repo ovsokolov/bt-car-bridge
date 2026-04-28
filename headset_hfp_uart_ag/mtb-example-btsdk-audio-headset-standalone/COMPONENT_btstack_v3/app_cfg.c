@@ -91,7 +91,7 @@
 // SDP Record handle for PNP (Device Information)
 #define HANDLE_PNP                              0x10008
 
-#define WICED_DEVICE_NAME                       "Watch"
+#define WICED_DEVICE_NAME                       "NavTool-CarConnect"
 
 #define AV_SBC_MAX_BITPOOL          53
 
@@ -169,7 +169,7 @@ const wiced_bt_cfg_isoc_t wiced_bt_cfg_isoc =
  /* wiced_bt core stack configuration */
 const wiced_bt_cfg_settings_t wiced_bt_cfg_settings =
 {
-    .device_name = (uint8_t*)app_gap_device_name,            /**< Local device name ( NULL terminated ) */
+    .device_name = (uint8_t*)WICED_DEVICE_NAME,              /**< Local device name ( NULL terminated ) */
     .security_required = (BTM_SEC_BEST_EFFORT),             /**< Security requirements mask */
 
     .p_br_cfg = &wiced_bt_cfg_br,

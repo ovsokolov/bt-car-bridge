@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 from queue import Empty, Queue
+import re
+import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
@@ -42,6 +44,9 @@ CALL_STATE_INCOMING = "incoming"
 CALL_STATE_ACTIVE = "active"
 CALL_STATE_HELD = "held"
 CALL_STATE_OUTGOING = "outgoing"
+MAX_EVENTS_PER_UI_TICK = 25
+MAX_TEXT_LOG_LINES = 2500
+TEXT_FLUSH_MS = 50
 
 
 @dataclass
@@ -87,6 +92,10 @@ class BridgeApp:
         apply_saved_state(self.state)
 
         self._event_queue: Queue[tuple[str, str, dict]] = Queue()
+        self._serial_work_queue: Queue[tuple[Callable[[], bool], str, str]] = Queue()
+        self._serial_worker_stop = threading.Event()
+        self._pending_text_appends: dict[str, tuple[tk.Text, list[str]]] = {}
+        self._text_flush_scheduled = False
         self._port_options: list[str] = []
         self._port_map: dict[str, SerialPortInfo] = {}
         self._port_label_to_device: dict[str, str] = {}
@@ -137,6 +146,8 @@ class BridgeApp:
         self._pending_car_results: list[tuple[str, str]] = []
         self._last_clip_number = ""
         self._last_clip_type = "129"
+        self._incoming_bridge_sent = False
+        self._last_sent_bridge_cid = ""
         self._call_has_real_clip = False
         self._ring_placeholder_clip_sent = False
         self._last_phone_avrc_ct_attempt_at = 0.0
@@ -165,6 +176,8 @@ class BridgeApp:
         self._build_ui()
         self.refresh_ports()
         self._refresh_all_views()
+        self._serial_worker = threading.Thread(target=self._serial_worker_loop, name="bridge-serial-worker", daemon=True)
+        self._serial_worker.start()
         self.root.after(100, self._drain_events)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -393,7 +406,8 @@ class BridgeApp:
         send_entry = ttk.Entry(send_row, textvariable=send_var)
         send_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 6))
         send_entry.bind("<Return>", lambda _event, name=key: self.send_trace_line(name))
-        ttk.Button(send_row, text="Send Line", command=lambda name=key: self.send_trace_line(name)).pack(side=tk.LEFT)
+        ttk.Button(send_row, text="Inject Into Board", command=lambda name=key: self.send_trace_line(name)).pack(side=tk.LEFT)
+        ttk.Button(send_row, text="Send To Other Board", command=lambda name=key: self.send_trace_line_to_peer(name)).pack(side=tk.LEFT, padx=(6, 0))
         ttk.Button(send_row, text="Peer Hello", command=lambda name=key: self.send_trace_peer_hello(name)).pack(side=tk.LEFT, padx=(6, 0))
 
         text = tk.Text(frame, height=28, wrap="word")
@@ -415,6 +429,28 @@ class BridgeApp:
         def sink(kind: str, payload: dict) -> None:
             self._event_queue.put((side, kind, payload))
         return sink
+
+    def _queue_bridge_trace(self, message: str) -> None:
+        self._event_queue.put(("bridge", "log", {"message": message}))
+
+    def _enqueue_serial_work(self, action: Callable[[], bool], success_message: str, failure_message: str = "") -> None:
+        self._serial_work_queue.put((action, success_message, failure_message))
+
+    def _serial_worker_loop(self) -> None:
+        while not self._serial_worker_stop.is_set():
+            try:
+                action, success_message, failure_message = self._serial_work_queue.get(timeout=0.1)
+            except Empty:
+                continue
+            try:
+                ok = action()
+            except Exception as exc:
+                ok = False
+                failure_message = f"{failure_message}: {exc}" if failure_message else f"Serial bridge action failed: {exc}"
+            if ok:
+                self._queue_bridge_trace(success_message)
+            elif failure_message:
+                self._queue_bridge_trace(failure_message)
 
     def refresh_ports(self) -> None:
         ports = SerialBridgeSession.list_ports()
@@ -481,6 +517,14 @@ class BridgeApp:
         if self.trace_sessions[key].send_line(line):
             widgets.send_var.set(line)
 
+    def send_trace_line_to_peer(self, key: str) -> None:
+        widgets = self._trace_widgets[key]
+        line = widgets.send_var.get().strip()
+        target_key = "car_trace" if key == "phone_trace" else "phone_trace"
+        if self.trace_sessions[target_key].send_line(line):
+            widgets.send_var.set(line)
+            self._bridge_trace(f"Manual PUART send {key} -> {target_key}: {line}")
+
     def send_trace_peer_hello(self, key: str) -> None:
         line = self._default_trace_peer_hello(key)
         self._trace_widgets[key].send_var.set(line)
@@ -499,7 +543,7 @@ class BridgeApp:
             identity = self.phone_session.info.bridge_identity.strip()
             expected = EXPECTED_IDENTITIES["phone"]
             target_port = self.phone_session.info.port or "<unknown port>"
-            if identity and identity != expected:
+            if identity and not self._identity_matches("phone", identity):
                 self.phone_session._log(
                     f"Blocked phone pairing visibility command on {target_port} because identity is {identity}, expected {expected}"
                 )
@@ -513,7 +557,10 @@ class BridgeApp:
             self.phone_session._log(
                 f"Applying phone pairing visibility on {target_port} for identity {identity or expected}"
             )
-            self.phone_session.apply_pairable_visibility(pairable, visible)
+            if pairable and visible:
+                self.phone_session.emulate_headset_discoverable_button()
+            else:
+                self.phone_session.apply_pairable_visibility(pairable, visible)
         else:
             self.phone_session.info.last_status = (
                 f"HF defaults armed: pairable={'yes' if pairable else 'no'}, visible={'yes' if visible else 'no'}"
@@ -652,15 +699,22 @@ class BridgeApp:
             self._replace_text(widgets.text, "")
 
     def _drain_events(self) -> None:
+        processed = 0
         try:
-            while True:
+            while processed < MAX_EVENTS_PER_UI_TICK:
                 side, kind, payload = self._event_queue.get_nowait()
                 self._handle_event(side, kind, payload)
+                processed += 1
         except Empty:
             pass
-        self.root.after(100, self._drain_events)
+        delay_ms = 1 if not self._event_queue.empty() else 100
+        self.root.after(delay_ms, self._drain_events)
 
     def _handle_event(self, side: str, kind: str, payload: dict) -> None:
+        if side == "bridge":
+            if kind == "log":
+                self._bridge_trace(str(payload.get("message", "")))
+            return
         if side in self._trace_widgets:
             self._handle_trace_event(side, kind, payload)
             return
@@ -673,12 +727,11 @@ class BridgeApp:
             timestamp = datetime.now().strftime("%H:%M:%S")
             label = f"[{timestamp}] [{info.label}] {message}\n"
             self._append_text(self._side_widgets[side].log_text, label)
-            self._append_text(self.bridge_log, label)
         elif kind == "state":
             self._refresh_side(side)
             identity = info.bridge_identity.strip()
             expected = EXPECTED_IDENTITIES[side]
-            if identity and identity != expected:
+            if identity and not self._identity_matches(side, identity):
                 self.summary_var.set(f"Identity mismatch on {info.label}: expected {expected}, got {identity}")
         elif kind == "user_confirmation":
             numeric_value = payload.get("numeric_value", 0)
@@ -721,6 +774,10 @@ class BridgeApp:
         elif kind == "state":
             self._refresh_trace_side(key)
 
+    def _identity_matches(self, side: str, identity: str) -> bool:
+        expected = EXPECTED_IDENTITIES[side]
+        return identity == expected or identity.startswith(f"{expected}-")
+
     def _relay_puart_line(self, source_key: str, text: str) -> None:
         if not self._puart_relay_enabled.get():
             return
@@ -732,8 +789,11 @@ class BridgeApp:
         if not target_session.info.is_open:
             self._bridge_trace(f"PUART relay skipped {source_key} -> {target_key}: target port is closed ({line})")
             return
-        if target_session.send_line(line):
-            self._bridge_trace(f"PUART relay {source_key} -> {target_key}: {line}")
+        self._enqueue_serial_work(
+            lambda session=target_session, payload=line: session.send_line(payload),
+            f"PUART relay {source_key} -> {target_key}: {line}",
+            f"PUART relay failed {source_key} -> {target_key}: {line}",
+        )
 
     def _handle_bridge_packet(self, side: str, payload: dict) -> None:
         if not self._bridge_enabled:
@@ -866,6 +926,8 @@ class BridgeApp:
             self._send_phone_to_car_bridge_line("BR1,AUDIO_CLOSE", "Phone HF audio close -> AG PUART semantic AUDIO_CLOSE")
             self._bridge_ag_audio("close")
             return
+        if opcode_value == 0x0003 and self._bridge_phone_wrapped_hci_text(payload):
+            return
         if opcode_value < EVENT_HF_AT_BASE or opcode_value >= opcode(GROUP_HF, 0x40):
             return
 
@@ -877,6 +939,7 @@ class BridgeApp:
             self._last_phone_ring_at = now
             self._last_phone_real_ring_at = now
             self._bridge_phone_incoming_call_hint()
+            self._send_phone_to_car_bridge_line("BR1,RING", "Phone HF RING -> AG PUART semantic RING")
             self._send_car_result("RING", "Phone HF RING -> Car AG RING")
             if self._last_clip_number:
                 clip_type = self._last_clip_type if self._last_clip_type.isdigit() else "129"
@@ -904,7 +967,8 @@ class BridgeApp:
             clip_number = self._normalize_clip_number(text)
             self._last_clip_number = clip_number
             self._last_clip_type = str(number if number > 0 else 129)
-            self._send_phone_to_car_bridge_line(f"BR1,CID,{clip_number}", f"Phone HF CLIP {clip_number} -> AG PUART semantic CID")
+            self._send_phone_incoming_bridge_line_once("Phone HF CLIP")
+            self._send_phone_cid_bridge_line_once(clip_number, f"Phone HF CLIP {clip_number} -> AG PUART semantic CID")
             clip = f'+CLIP: "{clip_number}",{number}'
             self._send_car_result(clip, f"Phone HF CLIP {text}/{number} -> Car AG {clip}")
         elif event_code == 0x0A and text:
@@ -979,6 +1043,103 @@ class BridgeApp:
                 )
             else:
                 self._bridge_trace("Ignored Phone HF +CME ERROR because there is no pending car-side AT command")
+
+    def _bridge_phone_wrapped_hci_text(self, payload: bytes) -> bool:
+        text = payload.decode("ascii", errors="ignore")
+        if not any(token in text for token in ("RING", "+CLIP:", "+CIEV:", "+CIND:")):
+            return False
+        handled = False
+        for line in re.split(r"[\r\n]+", text):
+            line = line.strip("\x00 \t")
+            if not line:
+                continue
+            if line == "RING":
+                now = time.monotonic()
+                self._last_phone_ring_at = now
+                self._last_phone_real_ring_at = now
+                self._bridge_trace("Phone HF wrapped HCI RING observed")
+                self._bridge_phone_incoming_call_hint()
+                self._send_phone_to_car_bridge_line("BR1,RING", "Phone HF wrapped HCI RING -> AG PUART semantic RING")
+                self._send_car_result("RING", "Phone HF wrapped HCI RING -> Car AG RING")
+                if self._last_clip_number:
+                    clip_type = self._last_clip_type if self._last_clip_type.isdigit() else "129"
+                    clip = f'+CLIP: "{self._last_clip_number}",{clip_type}'
+                    self._send_car_result(clip, f"Phone HF wrapped HCI RING cached caller ID -> Car AG {clip}")
+                else:
+                    self._send_placeholder_clip_if_needed("Phone HF wrapped HCI RING fallback")
+                handled = True
+            elif line.startswith("+CLIP:"):
+                clip_match = re.search(r'\+CLIP:\s*"([^"]*)"\s*,\s*(\d+)', line)
+                clip_number = self._normalize_clip_number(clip_match.group(1) if clip_match else line)
+                clip_type = clip_match.group(2) if clip_match else "129"
+                self._bridge_phone_incoming_call_hint()
+                now = time.monotonic()
+                self._last_phone_clip_at = now
+                self._last_phone_real_clip_at = now
+                self._call_has_real_clip = True
+                self._last_clip_number = clip_number
+                self._last_clip_type = clip_type
+                self._send_phone_incoming_bridge_line_once("Phone HF wrapped HCI CLIP")
+                self._send_phone_cid_bridge_line_once(clip_number, f"Phone HF wrapped HCI CLIP {clip_number} -> AG PUART semantic CID")
+                clip = f'+CLIP: "{clip_number}",{clip_type}'
+                self._send_car_result(clip, f"Phone HF wrapped HCI {line} -> Car AG {clip}")
+                handled = True
+            elif line.startswith("+CIEV:"):
+                ciev_match = re.search(r"\+CIEV:\s*(\d+)\s*,\s*(\d+)", line)
+                if ciev_match:
+                    phone_index, value = ciev_match.groups()
+                    if phone_index == "1":
+                        if value == "1":
+                            self._bridge_trace("Phone HF wrapped HCI +CIEV 1,1 treated as active call")
+                            self._bridge_phone_active_call_hint("Phone HF wrapped HCI +CIEV 1,1")
+                        else:
+                            self._bridge_trace("Phone HF wrapped HCI +CIEV 1,0 treated as call ended")
+                            self._set_call_indicators("0", "0", "0")
+                            self._refresh_phone_call_state("Phone HF wrapped HCI +CIEV 1,0")
+                            self._incoming_bridge_sent = False
+                            self._last_sent_bridge_cid = ""
+                            self._update_answer_pending_from_call_state()
+                            self._update_car_avrc_call_gate("Phone HF wrapped HCI +CIEV 1,0")
+                            self._send_car_cind_update("Phone HF wrapped HCI +CIEV 1,0")
+                        handled = True
+                        continue
+                    if phone_index == "2":
+                        if value == "1":
+                            self._bridge_trace("Phone HF wrapped HCI +CIEV 2,1 treated as incoming setup")
+                            self._incoming_bridge_sent = False
+                            self._bridge_phone_incoming_call_hint()
+                        else:
+                            if self._phone_hf_cind.get(2) == "1":
+                                self._bridge_trace("Phone HF wrapped HCI +CIEV 2,0 treated as setup complete while call is active")
+                                self._set_call_indicators("1", "0", "0")
+                                self._refresh_phone_call_state("Phone HF wrapped HCI +CIEV 2,0 active setup complete")
+                            else:
+                                self._bridge_trace("Phone HF wrapped HCI +CIEV 2,0 treated as call ended")
+                                self._set_call_indicators("0", "0", "0")
+                                self._refresh_phone_call_state("Phone HF wrapped HCI +CIEV 2,0")
+                                self._incoming_bridge_sent = False
+                            self._update_answer_pending_from_call_state()
+                            self._update_car_avrc_call_gate("Phone HF wrapped HCI +CIEV 2,0")
+                            self._send_car_cind_update("Phone HF wrapped HCI +CIEV 2,0")
+                        handled = True
+                        continue
+                    ag_index, ag_value = self._bridge_phone_ciev_to_car(f"{phone_index},{value}")
+                    if ag_index is not None:
+                        self._send_car_result(
+                            f"+CIEV: {ag_index},{ag_value}",
+                            f"Phone HF wrapped HCI +CIEV {phone_index},{value} -> Car AG +CIEV {ag_index},{ag_value}",
+                        )
+                    handled = True
+            elif line.startswith("+CIND:"):
+                values = line.split(":", 1)[1].strip()
+                ag_cind = self._convert_phone_cind_to_ag(values)
+                self._refresh_phone_call_state(f"Phone HF wrapped HCI +CIND {values}")
+                self._update_answer_pending_from_call_state()
+                self._update_car_avrc_call_gate(f"Phone HF wrapped HCI +CIND {values}")
+                self._send_car_cind_update(f"Phone HF wrapped HCI +CIND {values}")
+                self._send_car_result(f"+CIND: {ag_cind}", f"Phone HF wrapped HCI +CIND {values} -> Car AG +CIND {ag_cind}")
+                handled = True
+        return handled
 
     def _bridge_car_packet(self, opcode_value: int, payload: bytes) -> None:
         if not self._avrc_bridge_enabled and (opcode_value >> 8) == GROUP_AVRC_TARGET:
@@ -1136,6 +1297,8 @@ class BridgeApp:
             self._call_has_real_clip = False
             self._last_clip_number = ""
             self._last_clip_type = "129"
+            self._incoming_bridge_sent = False
+            self._last_sent_bridge_cid = ""
             self._ring_placeholder_clip_sent = False
         elif phone_index == 3 and value == "0":
             # Ensure each new incoming-call setup phase can emit a fallback placeholder
@@ -1166,6 +1329,8 @@ class BridgeApp:
     def _bridge_phone_incoming_call_hint(self) -> None:
         changed = self._set_call_indicators("0", "1", "0")
         self._refresh_phone_call_state("Phone HF inferred incoming call")
+        self._send_phone_incoming_bridge_line_once("Phone HF inferred incoming call")
+        self._ensure_incoming_fallback_ring_refresh()
         self._car_answer_pending = False
         if not changed:
             return
@@ -1215,26 +1380,55 @@ class BridgeApp:
             self._pending_car_results.append((text, trace))
             self._bridge_trace(f"Queued Car AG send '{text}' because no AG service handle is available yet")
             return
-        self.car_session.ag_send_string(text)
-        self._bridge_trace(trace)
+        self._enqueue_serial_work(
+            lambda payload=text: self.car_session.ag_send_string(payload) is not False,
+            trace,
+            f"Failed Car AG send '{text}'",
+        )
 
-    def _send_phone_to_car_bridge_line(self, line: str, reason: str) -> None:
-        self._send_bridge_protocol_line("car_trace", line, reason)
+    def _send_phone_to_car_bridge_line(self, line: str, reason: str) -> bool:
+        return self._send_bridge_protocol_line("car_trace", line, reason)
 
-    def _send_car_to_phone_bridge_line(self, line: str, reason: str) -> None:
-        self._send_bridge_protocol_line("phone_trace", line, reason)
+    def _send_phone_incoming_bridge_line_once(self, reason: str) -> None:
+        if self._incoming_bridge_sent:
+            return
+        if self._last_clip_number:
+            sent = self._send_phone_to_car_bridge_line(
+                f"BR1,INCOMING,{self._last_clip_number}",
+                f"{reason} -> AG PUART semantic INCOMING with caller ID",
+            )
+        else:
+            sent = self._send_phone_to_car_bridge_line("BR1,INCOMING", f"{reason} -> AG PUART semantic INCOMING")
+        if sent:
+            self._incoming_bridge_sent = True
 
-    def _send_bridge_protocol_line(self, target_key: str, line: str, reason: str) -> None:
+    def _send_phone_cid_bridge_line_once(self, clip_number: str, reason: str) -> None:
+        if not clip_number:
+            return
+        if clip_number == self._last_sent_bridge_cid and self._phone_call_state == CALL_STATE_INCOMING:
+            self._bridge_trace(f"Skipped duplicate AG PUART semantic CID for {clip_number} ({reason})")
+            return
+        self._last_sent_bridge_cid = clip_number
+        self._send_phone_to_car_bridge_line(f"BR1,CID,{clip_number}", reason)
+
+    def _send_car_to_phone_bridge_line(self, line: str, reason: str) -> bool:
+        return self._send_bridge_protocol_line("phone_trace", line, reason)
+
+    def _send_bridge_protocol_line(self, target_key: str, line: str, reason: str) -> bool:
         clean_line = line.strip()
         if not clean_line.startswith("BR1,"):
             self._bridge_trace(f"Skipped malformed PUART semantic line from {reason}: {clean_line}")
-            return
+            return False
         target_session = self.trace_sessions[target_key]
         if not target_session.info.is_open:
             self._bridge_trace(f"Skipped PUART semantic {clean_line}: {target_key} is closed ({reason})")
-            return
-        if target_session.send_line(clean_line):
-            self._bridge_trace(f"{reason}: pushed {clean_line} to {target_key}")
+            return False
+        self._enqueue_serial_work(
+            lambda session=target_session, payload=clean_line: session.send_line(payload),
+            f"{reason}: pushed {clean_line} to {target_key}",
+            f"Failed PUART semantic {clean_line}: {target_key} write failed ({reason})",
+        )
+        return True
 
     def _flush_pending_car_results(self) -> None:
         if self.car_session.info.service_handle <= 0 or not self._pending_car_results:
@@ -1244,8 +1438,11 @@ class BridgeApp:
         self._pending_car_results.clear()
         self._bridge_trace(f"Flushing {len(queued)} queued Phone->Car AG result(s)")
         for text, trace in queued:
-            self.car_session.ag_send_string(text)
-            self._bridge_trace(trace)
+            self._enqueue_serial_work(
+                lambda payload=text: self.car_session.ag_send_string(payload) is not False,
+                trace,
+                f"Failed queued Car AG send '{text}'",
+            )
 
     def _bridge_hf_audio(self, action: str) -> None:
         if action == "open":
@@ -1368,19 +1565,15 @@ class BridgeApp:
         self._phone_call_state = new_state
         self._bridge_trace(f"Phone call state {old_state} -> {new_state} ({reason})")
         if new_state == CALL_STATE_INCOMING:
-            if self._last_clip_number:
-                self._send_phone_to_car_bridge_line(
-                    f"BR1,INCOMING,{self._last_clip_number}",
-                    f"{reason} -> AG PUART semantic INCOMING with caller ID",
-                )
-            else:
-                self._send_phone_to_car_bridge_line("BR1,INCOMING", f"{reason} -> AG PUART semantic INCOMING")
+            self._send_phone_incoming_bridge_line_once(reason)
             self._ensure_incoming_fallback_ring_refresh()
         else:
             self._cancel_incoming_fallback_ring_refresh()
         if new_state == CALL_STATE_ACTIVE:
             self._send_phone_to_car_bridge_line("BR1,ACTIVE", f"{reason} -> AG PUART semantic ACTIVE")
         elif new_state == CALL_STATE_IDLE and old_state != CALL_STATE_IDLE:
+            self._incoming_bridge_sent = False
+            self._last_sent_bridge_cid = ""
             self._send_phone_to_car_bridge_line("BR1,ENDED", f"{reason} -> AG PUART semantic ENDED")
 
     def _ensure_incoming_fallback_ring_refresh(self) -> None:
@@ -1415,8 +1608,11 @@ class BridgeApp:
         if self.car_session.info.service_handle <= 0:
             self._bridge_trace(f"Deferred Car AG Set CIND {ag_cind} ({reason}) because no AG service handle is available yet")
             return
-        self.car_session.ag_set_cind(ag_cind)
-        self._bridge_trace(f"{reason} -> Car AG Set CIND {ag_cind}")
+        self._enqueue_serial_work(
+            lambda payload=ag_cind: self.car_session.ag_set_cind(payload) is not False,
+            f"{reason} -> Car AG Set CIND {ag_cind}",
+            f"Failed Car AG Set CIND {ag_cind} ({reason})",
+        )
 
     def _is_phone_incoming_call_state(self) -> bool:
         return self._phone_call_state == CALL_STATE_INCOMING
@@ -1916,12 +2112,34 @@ class BridgeApp:
         )
 
     def _append_text(self, widget: tk.Text, text: str) -> None:
+        key = str(widget)
+        if key not in self._pending_text_appends:
+            self._pending_text_appends[key] = (widget, [])
+        self._pending_text_appends[key][1].append(text)
+        if not self._text_flush_scheduled:
+            self._text_flush_scheduled = True
+            self.root.after(TEXT_FLUSH_MS, self._flush_text_appends)
+
+    def _flush_text_appends(self) -> None:
+        pending = list(self._pending_text_appends.values())
+        self._pending_text_appends.clear()
+        self._text_flush_scheduled = False
+        for widget, chunks in pending:
+            self._append_text_now(widget, "".join(chunks))
+
+    def _append_text_now(self, widget: tk.Text, text: str) -> None:
+        if not text:
+            return
         widget.configure(state=tk.NORMAL)
         widget.insert(tk.END, text)
+        line_count = int(widget.index("end-1c").split(".", 1)[0])
+        if line_count > MAX_TEXT_LOG_LINES:
+            widget.delete("1.0", f"{line_count - MAX_TEXT_LOG_LINES}.0")
         widget.see(tk.END)
         widget.configure(state=tk.DISABLED)
 
     def _replace_text(self, widget: tk.Text, text: str) -> None:
+        self._pending_text_appends.pop(str(widget), None)
         widget.configure(state=tk.NORMAL)
         widget.delete("1.0", tk.END)
         if text:
@@ -1933,10 +2151,13 @@ class BridgeApp:
 
     def _on_close(self) -> None:
         self._save_state()
+        self._serial_worker_stop.set()
         for session in self.sessions.values():
             session.close()
         for session in self.trace_sessions.values():
             session.close()
+        if self._serial_worker.is_alive():
+            self._serial_worker.join(timeout=1.0)
         self.refresh_ports()
         self.root.destroy()
 

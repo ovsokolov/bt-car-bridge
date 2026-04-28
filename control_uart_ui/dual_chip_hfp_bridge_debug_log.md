@@ -9,6 +9,7 @@ Use this file as the running debug record for all future lab work.
 - if a conclusion is later disproved, mark it as superseded in a later entry
 - include exact observed log lines whenever possible
 - always record the flashed identity marker when firmware was changed
+- do not commit or push new changes until the user confirms the relevant test passed
 
 ## Status Values
 
@@ -279,6 +280,9 @@ If work resumes later, start here:
   - keep a silent periodic PUART RX flush timer so received lines still appear on HCI as `0xFF25`
   - remove the confusing control-pane `Send PUART Hello` button
   - continue using the PUART Trace pane `Peer Hello` and `Send Line` controls for manual tests
+  - clarify PUART Trace manual controls:
+    - `Inject Into Board` sends to the board connected to the current pane
+    - `Send To Other Board` sends to the opposite board's PUART port
 - Expected result:
   - HCI panes no longer receive periodic `[SENT over PUART] BR1,HELLO,...`
   - manual UI sends still produce `[RECEIVED over PUART] BR1,...` on the receiving board
@@ -286,4 +290,301 @@ If work resumes later, start here:
   - source changes staged
   - no remaining firmware `HELLO_LINE`, `synchronous_write`, or bridge `TX:` heartbeat path found
   - `python -m py_compile` passed for `ui.py`
+- Status: `READY_FOR_BUILD_AND_FLASH`
+
+## TEST-20260428-08
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Accept firmware identity suffixes in UI board guard
+- Board(s): UI
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+- Procedure:
+  - replace exact identity match with prefix-aware check
+  - accept `NavTool-PhoneConnect-*` in the PhoneConnect pane
+  - accept `NavTool-CarConnect-*` in the CarConnect pane
+- Expected result:
+  - Phone pairing visibility is not blocked for `NavTool-PhoneConnect-HFTEST6-S3-AI00`
+  - wrong-board protection still blocks identities that do not match the expected prefix
+- Actual result:
+  - source change staged
+  - `python -m py_compile` passed for `ui.py`
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-09
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: HF discoverable command path
+- Board(s): UI and HF
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/hci.py`
+  - `control_uart_ui/src/control_ui_app/session.py`
+  - `control_uart_ui/src/control_ui_app/ui.py`
+- Finding:
+  - HF firmware does not handle UI generic device commands `0x0008` / `0x0009`
+  - HF firmware does handle `HCI_CONTROL_HCI_AUDIO_COMMAND_BUTTON` (`0x2930`)
+  - discoverable mode maps to `PLAY_PAUSE_BUTTON`, `BUTTON_VERY_LONG_DURATION_EVENT`, `BUTTON_STATE_HELD`
+- Procedure:
+  - when enabling PhoneConnect pairing, send HCI Audio Button payload `00 10 00`
+  - this emulates long-press SW15 / discoverable mode
+- Expected result:
+  - HF enters discoverable/connectable mode
+  - phone can find the HF board
+- Actual result:
+  - source change staged
+  - Python compile check pending/passed in local run
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-10
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Restore advertised Bluetooth names
+- Board(s): HF and AG firmware
+- Files changed:
+  - `headset_hfp_uart_hf/mtb-example-btsdk-audio-headset-standalone/wiced_app_cfg.c`
+  - `headset_hfp_uart_hf/mtb-example-btsdk-audio-headset-standalone/headset_control_le.c`
+  - `headset_hfp_uart_ag/mtb-example-btsdk-audio-headset-standalone/COMPONENT_btstack_v1/app_cfg.c`
+  - `headset_hfp_uart_ag/mtb-example-btsdk-audio-headset-standalone/COMPONENT_btstack_v1/app.c`
+  - `headset_hfp_uart_ag/mtb-example-btsdk-audio-headset-standalone/COMPONENT_btstack_v1/cycfg_bt.cybt`
+  - `headset_hfp_uart_ag/mtb-example-btsdk-audio-headset-standalone/COMPONENT_btstack_v3/app_cfg.c`
+  - `headset_hfp_uart_ag/mtb-example-btsdk-audio-headset-standalone/COMPONENT_btstack_v3/cycfg_bt.cybt`
+- Procedure:
+  - change HF Bluetooth device name from `Headset` to `NavTool-PhoneConnect`
+  - change HF LE GAP name from `Headset LE` to `NavTool-PhoneConnect`
+  - change AG Bluetooth/GAP names from `Watch` to `NavTool-CarConnect`
+  - stop AG stack config from relying on generated `app_gap_device_name` for the BR/EDR local name
+  - keep v1 BLE advertising local-name length as a compile-time constant (`18`) because static initializers cannot use `app_gap_device_name_len`
+- Expected result:
+  - phone discovery sees HF as `NavTool-PhoneConnect`
+  - car/HF discovery sees AG as `NavTool-CarConnect`
+- Actual result:
+  - source changes staged
+  - search no longer finds active `"Headset"`, `"Headset LE"`, or `"Watch"` name literals in the patched config paths
+- Status: `READY_FOR_BUILD_AND_FLASH`
+
+## TEST-20260428-11
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: UI responsiveness during HF incoming-call event burst
+- Board(s): UI
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+  - `control_uart_ui/src/control_ui_app/session.py`
+- Finding:
+  - UI event draining used an unbounded loop, so a burst of HFP/HCI events could starve the Tk main loop
+  - HCI and PUART serial writes had no explicit write timeout, so a blocked COM write could make the UI appear hung
+- Procedure:
+  - limit UI queue processing to `75` events per Tk tick
+  - reschedule the next drain at `1 ms` only while backlog remains
+  - cap each text log to `2500` lines
+  - open HCI and PUART serial ports with `write_timeout=0.2`
+- Expected result:
+  - when HF receives an incoming call, the UI keeps repainting and remains clickable
+  - bridge events may drain over several short UI ticks instead of freezing the window
+- Actual result:
+  - source changes staged
+  - `python -m py_compile src\control_ui_app\ui.py src\control_ui_app\session.py src\control_ui_app\hci.py` passed
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-12
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: UI responsiveness second pass after incoming-call slowdown remained
+- Board(s): UI
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+- Finding:
+  - first event-drain guard improved the UI only slightly
+  - the UI was still inserting many small log chunks into Tk text widgets during HF call bursts
+  - HF log lines were duplicated into the unified Bridge Trace, doubling render pressure
+  - PUART relay and Car AG command writes still ran inline while handling UI events
+- Procedure:
+  - lower per-tick event processing from `75` to `25`
+  - batch text-widget appends and flush them every `50 ms`
+  - keep raw side HCI logs in their own side panes only; Bridge Trace now records bridge decisions, not every HCI line
+  - add a serial worker queue for PUART relay, PUART semantic pushes, Car AG `SEND_STRING`, and Car AG `Set CIND`
+- Expected result:
+  - HF incoming-call burst should no longer make the UI painfully slow
+  - Phone/HF call events should still push `BR1,...` semantic lines to the Car/AG PUART side
+- Actual result:
+  - source changes staged
+  - `python -m py_compile src\control_ui_app\ui.py src\control_ui_app\session.py src\control_ui_app\hci.py` passed
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-13
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: HF incoming call logs appear only on HF, no AG semantic receive
+- Board(s): UI
+- Evidence:
+  - inspected `C:\Users\ovsok\Documents\HCI-call-log.txt`
+  - HF call events are present, including `+CIEV: 2,1`, `RING`, and `+CLIP: "+13474070958",145,...`
+  - those call events are wrapped inside opcode `0x0003` instead of arriving as the existing `0x03xx` HF AT event opcodes
+  - log also contains many all-zero audio payload packets on `0x2902` and `0x140A`
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+  - `control_uart_ui/src/control_ui_app/session.py`
+- Procedure:
+  - suppress all-zero `0x2902` and `0x140A` audio payload packets before UI logging/event dispatch
+  - add wrapped-HCI text parser for Phone/HF opcode `0x0003`
+  - map wrapped `RING`, `+CLIP`, `+CIEV`, and `+CIND` text into the same bridge logic used by normal HF AT events
+- Expected result:
+  - UI slowdown from zero-payload audio spam should drop sharply
+  - wrapped HF `RING` should generate `BR1,INCOMING` to Car/AG PUART
+  - wrapped HF `+CLIP` should generate `BR1,CID,<number>` to Car/AG PUART
+- Actual result:
+  - source changes staged
+  - `python -m py_compile src\control_ui_app\ui.py src\control_ui_app\session.py src\control_ui_app\hci.py` passed
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-14
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Correct wrapped-HCI incoming state and suppress duplicate caller ID
+- Board(s): UI
+- Evidence:
+  - AG HCI received `BR1,ACTIVE` followed by repeated `BR1,CID,+13474070958`
+  - log starts with wrapped `+CIEV: 2,1`, then `RING`, then `+CLIP`
+  - wrapped `+CIEV: 2,0` appears later near call teardown
+  - non-zero `0x2902` audio payload packets still flood the log after audio starts
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+  - `control_uart_ui/src/control_ui_app/session.py`
+- Procedure:
+  - in wrapped-HCI path only, treat `+CIEV: 2,1` as incoming setup instead of active call
+  - in wrapped-HCI path only, treat `+CIEV: 2,0` as call ended/idle
+  - suppress duplicate `BR1,CID,<number>` while the same incoming call remains active
+  - suppress large `0x2902` / `0x140A` audio payload packets regardless of whether payload is all-zero
+- Expected result:
+  - AG should receive `BR1,INCOMING` instead of premature `BR1,ACTIVE`
+  - AG should receive caller ID once per incoming call unless the number changes
+  - HF HCI pane should no longer be flooded by audio payload packets
+- Actual result:
+  - source changes staged
+  - `python -m py_compile src\control_ui_app\ui.py src\control_ui_app\session.py src\control_ui_app\hci.py` passed
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-15
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Add repeated ring pulse separate from caller ID
+- Board(s): UI
+- Finding:
+  - duplicate `BR1,CID,<number>` should stay suppressed per incoming call
+  - AG still needs a repeated ring indication while the phone continues emitting `RING`
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+- Procedure:
+  - send `BR1,RING` on every normal HF `RING`
+  - send `BR1,RING` on every wrapped-HCI `RING`
+  - keep `BR1,CID,<number>` deduped until the call ends or a new caller ID appears
+- Expected result:
+  - AG receives `BR1,INCOMING`
+  - AG receives one `BR1,CID,<number>`
+  - AG receives repeated `BR1,RING` pulses as phone repeats `RING`
+  - AG stops ringing on later `BR1,ACTIVE` or `BR1,ENDED`
+- Actual result:
+  - source changes staged
+  - compile check pending/passed locally
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-16
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Force one-shot incoming bridge event independent of stale UI call state
+- Board(s): UI
+- Evidence:
+  - inspected `C:\Users\ovsok\Documents\HCI-call-log.txt`
+  - first call event sequence is wrapped `+CIEV: 2,1`, then `RING`, then `+CLIP`, then a later `+CIEV: 2,0`
+  - AG received `BR1,CID`, later `BR1,RING`, then `BR1,ENDED`, but did not show `BR1,INCOMING`
+  - likely cause: `_refresh_phone_call_state()` returned early because the UI already believed the phone state was incoming
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+- Procedure:
+  - add `_incoming_bridge_sent` as a separate one-shot latch for the AG `BR1,INCOMING` line
+  - send `BR1,INCOMING` from incoming-call hints even if the internal call-state transition was already consumed
+  - reset `_incoming_bridge_sent` when phone indicators return idle/ended
+- Expected result:
+  - AG receives `BR1,INCOMING` once per incoming call episode
+  - AG still receives repeated `BR1,RING`
+  - AG still receives deduped `BR1,CID,<number>`
+  - AG receives `BR1,ENDED` when wrapped `+CIEV: 2,0` arrives
+- Actual result:
+  - source changes staged
+  - `python -m py_compile src\control_ui_app\ui.py src\control_ui_app\session.py src\control_ui_app\hci.py` passed
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-17
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Correct wrapped-HCI answered-call transition
+- Board(s): UI
+- Evidence:
+  - inspected `C:\Users\ovsok\Documents\HCI-call-log.txt`
+  - answered call sequence at `13:07:46` is wrapped `+CIEV: 1,1`, then wrapped `+CIEV: 2,0`
+  - previous logic treated every wrapped `+CIEV: 2,0` as ended, so AG received `BR1,ENDED` instead of `BR1,ACTIVE`
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+  - `control_uart_ui/dual_chip_hfp_bridge_context.md`
+  - `control_uart_ui/dual_chip_hfp_bridge_debug_log.md`
+- Procedure:
+  - treat wrapped `+CIEV: 1,1` as active call and emit `BR1,ACTIVE`
+  - treat wrapped `+CIEV: 2,0` as setup-complete if normalized call state is already active
+  - treat wrapped `+CIEV: 1,0` as call ended and emit `BR1,ENDED`
+  - reset the incoming one-shot latch when wrapped `+CIEV: 2,1` starts a new incoming setup
+- Expected result:
+  - AG receives `BR1,INCOMING` at call start after restarting the UI with this patch
+  - AG receives `BR1,ACTIVE` when the call is answered
+  - AG does not receive `BR1,ENDED` until the later wrapped `+CIEV: 1,0` or true idle/end transition
+- Actual result:
+  - source changes staged
+  - `python -m py_compile src\control_ui_app\ui.py src\control_ui_app\session.py src\control_ui_app\hci.py` passed
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-18
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Retry missing incoming semantic before CID/RING follow-ons
+- Board(s): UI
+- Evidence:
+  - AG now receives proper `BR1,ACTIVE` and `BR1,ENDED`
+  - AG still does not show `BR1,INCOMING`
+  - HF log still contains wrapped `+CIEV: 2,1` at the start of each call
+- Files changed:
+  - `control_uart_ui/src/control_ui_app/ui.py`
+- Procedure:
+  - make `_send_bridge_protocol_line()` return whether the target PUART session was open and the write was queued
+  - only set `_incoming_bridge_sent` after `BR1,INCOMING` is actually queued
+  - retry `BR1,INCOMING` after caller ID is parsed, before sending `BR1,CID`
+- Expected result:
+  - AG receives `BR1,INCOMING` before or near the first `BR1,CID`
+  - AG still receives repeated `BR1,RING`
+  - AG still receives `BR1,ACTIVE` on answer and `BR1,ENDED` on hangup
+- Actual result:
+  - source changes staged
+  - `python -m py_compile src\control_ui_app\ui.py src\control_ui_app\session.py src\control_ui_app\hci.py` passed
+- Status: `READY_FOR_SOFTWARE_TEST`
+
+## TEST-20260428-19
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Preserve burst PUART RX logs in firmware HCI pane
+- Board(s): HF and AG firmware
+- Evidence:
+  - AG PUART pane showed `TX BR1,INCOMING`, `TX BR1,RING`, and `TX BR1,CID,...` in the same second
+  - AG HCI pane only showed later received lines, making it look like `INCOMING` was missing
+  - firmware PUART RX logger stored only one pending RX line before the 1-second HCI flush, so later lines overwrote earlier lines
+- Files changed:
+  - `headset_hfp_uart_ag/mtb-example-btsdk-audio-headset-standalone/wiced_app.c`
+  - `headset_hfp_uart_hf/mtb-example-btsdk-audio-headset-standalone/headset_control.c`
+- Procedure:
+  - replace the single pending PUART RX line slot with an 8-line ring queue on both firmware sides
+  - drain all queued RX lines to HCI on each periodic flush
+  - keep HCI send out of the PUART interrupt callback
+- Expected result:
+  - AG HCI pane shows `[RECEIVED over PUART] BR1,INCOMING`, `[RECEIVED over PUART] BR1,RING`, and `[RECEIVED over PUART] BR1,CID,...` even when they arrive in the same second
+  - HF side gets the same protection for future AG-to-HF bursts
+- Actual result:
+  - source changes staged
+  - firmware build/flash test pending
 - Status: `READY_FOR_BUILD_AND_FLASH`

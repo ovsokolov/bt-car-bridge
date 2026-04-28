@@ -141,6 +141,7 @@
 #define HEADSET_PUART_BAUDRATE              921600U
 #define HEADSET_PUART_RX_FLUSH_INTERVAL_SEC 1U
 #define HEADSET_BRIDGE_LINE_MAX             96U
+#define HEADSET_BRIDGE_RX_QUEUE_DEPTH       8U
 
 /*****************************************************************************
 **  Structures
@@ -259,9 +260,11 @@ static wiced_timer_t headset_puart_rx_flush_timer;
 static wiced_bool_t headset_puart_rx_flush_timer_initialized = WICED_FALSE;
 static uint8_t headset_bridge_rx_line[HEADSET_BRIDGE_LINE_MAX];
 static uint16_t headset_bridge_rx_len = 0;
-static uint8_t headset_bridge_pending_rx_line[HEADSET_BRIDGE_LINE_MAX];
-static uint16_t headset_bridge_pending_rx_len = 0;
-static wiced_bool_t headset_bridge_pending_rx_valid = WICED_FALSE;
+static uint8_t headset_bridge_pending_rx_line[HEADSET_BRIDGE_RX_QUEUE_DEPTH][HEADSET_BRIDGE_LINE_MAX];
+static uint16_t headset_bridge_pending_rx_len[HEADSET_BRIDGE_RX_QUEUE_DEPTH];
+static uint8_t headset_bridge_pending_rx_head = 0;
+static uint8_t headset_bridge_pending_rx_tail = 0;
+static uint8_t headset_bridge_pending_rx_count = 0;
 
 struct headset_control_mic_data_info_t
 {
@@ -447,11 +450,13 @@ static void headset_control_hci_send_snapshot(void)
 static void headset_control_puart_rx_flush_timer_cb(uint32_t arg)
 {
     UNUSED_VARIABLE(arg);
-    if (headset_bridge_pending_rx_valid)
+    while (headset_bridge_pending_rx_count != 0U)
     {
-        headset_control_bridge_hci_log("RX:", headset_bridge_pending_rx_line, headset_bridge_pending_rx_len);
-        headset_bridge_pending_rx_valid = WICED_FALSE;
-        headset_bridge_pending_rx_len = 0;
+        uint8_t tail = headset_bridge_pending_rx_tail;
+
+        headset_control_bridge_hci_log("RX:", headset_bridge_pending_rx_line[tail], headset_bridge_pending_rx_len[tail]);
+        headset_bridge_pending_rx_tail = (uint8_t)((headset_bridge_pending_rx_tail + 1U) % HEADSET_BRIDGE_RX_QUEUE_DEPTH);
+        headset_bridge_pending_rx_count--;
     }
 }
 
@@ -497,9 +502,16 @@ static void headset_control_bridge_puart_process_byte(uint8_t byte)
     {
         if (headset_bridge_rx_len != 0U)
         {
-            memcpy(headset_bridge_pending_rx_line, headset_bridge_rx_line, headset_bridge_rx_len);
-            headset_bridge_pending_rx_len = headset_bridge_rx_len;
-            headset_bridge_pending_rx_valid = WICED_TRUE;
+            if (headset_bridge_pending_rx_count >= HEADSET_BRIDGE_RX_QUEUE_DEPTH)
+            {
+                headset_bridge_pending_rx_tail = (uint8_t)((headset_bridge_pending_rx_tail + 1U) % HEADSET_BRIDGE_RX_QUEUE_DEPTH);
+                headset_bridge_pending_rx_count--;
+            }
+
+            memcpy(headset_bridge_pending_rx_line[headset_bridge_pending_rx_head], headset_bridge_rx_line, headset_bridge_rx_len);
+            headset_bridge_pending_rx_len[headset_bridge_pending_rx_head] = headset_bridge_rx_len;
+            headset_bridge_pending_rx_head = (uint8_t)((headset_bridge_pending_rx_head + 1U) % HEADSET_BRIDGE_RX_QUEUE_DEPTH);
+            headset_bridge_pending_rx_count++;
             headset_bridge_rx_len = 0;
         }
         return;

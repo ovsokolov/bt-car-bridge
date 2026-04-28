@@ -83,6 +83,7 @@ static wiced_bt_buffer_pool_t* watch_app_pool_small = NULL;
 #define AG_PUART_RX_FLUSH_INTERVAL 1U
 #define AG_HCI_EVENT_BRIDGE_LINE  ((HCI_CONTROL_GROUP_MISC << 8) | 0x25)
 #define AG_BRIDGE_LINE_MAX        96U
+#define AG_BRIDGE_RX_QUEUE_DEPTH  8U
 
 
 static void write_eir(void);
@@ -115,18 +116,22 @@ static wiced_timer_t ag_puart_rx_flush_timer;
 static wiced_bool_t ag_puart_rx_flush_timer_initialized = WICED_FALSE;
 static uint8_t ag_bridge_rx_line[AG_BRIDGE_LINE_MAX];
 static uint16_t ag_bridge_rx_len = 0;
-static uint8_t ag_bridge_pending_rx_line[AG_BRIDGE_LINE_MAX];
-static uint16_t ag_bridge_pending_rx_len = 0;
-static wiced_bool_t ag_bridge_pending_rx_valid = WICED_FALSE;
+static uint8_t ag_bridge_pending_rx_line[AG_BRIDGE_RX_QUEUE_DEPTH][AG_BRIDGE_LINE_MAX];
+static uint16_t ag_bridge_pending_rx_len[AG_BRIDGE_RX_QUEUE_DEPTH];
+static uint8_t ag_bridge_pending_rx_head = 0;
+static uint8_t ag_bridge_pending_rx_tail = 0;
+static uint8_t ag_bridge_pending_rx_count = 0;
 
 static void ag_puart_rx_flush_timer_cb(uint32_t arg)
 {
     UNUSED_VARIABLE(arg);
-    if (ag_bridge_pending_rx_valid)
+    while (ag_bridge_pending_rx_count != 0U)
     {
-        ag_bridge_hci_log("RX:", ag_bridge_pending_rx_line, ag_bridge_pending_rx_len);
-        ag_bridge_pending_rx_valid = WICED_FALSE;
-        ag_bridge_pending_rx_len = 0;
+        uint8_t tail = ag_bridge_pending_rx_tail;
+
+        ag_bridge_hci_log("RX:", ag_bridge_pending_rx_line[tail], ag_bridge_pending_rx_len[tail]);
+        ag_bridge_pending_rx_tail = (uint8_t)((ag_bridge_pending_rx_tail + 1U) % AG_BRIDGE_RX_QUEUE_DEPTH);
+        ag_bridge_pending_rx_count--;
     }
 }
 
@@ -169,9 +174,16 @@ static void ag_bridge_puart_process_byte(uint8_t byte)
     {
         if (ag_bridge_rx_len != 0U)
         {
-            memcpy(ag_bridge_pending_rx_line, ag_bridge_rx_line, ag_bridge_rx_len);
-            ag_bridge_pending_rx_len = ag_bridge_rx_len;
-            ag_bridge_pending_rx_valid = WICED_TRUE;
+            if (ag_bridge_pending_rx_count >= AG_BRIDGE_RX_QUEUE_DEPTH)
+            {
+                ag_bridge_pending_rx_tail = (uint8_t)((ag_bridge_pending_rx_tail + 1U) % AG_BRIDGE_RX_QUEUE_DEPTH);
+                ag_bridge_pending_rx_count--;
+            }
+
+            memcpy(ag_bridge_pending_rx_line[ag_bridge_pending_rx_head], ag_bridge_rx_line, ag_bridge_rx_len);
+            ag_bridge_pending_rx_len[ag_bridge_pending_rx_head] = ag_bridge_rx_len;
+            ag_bridge_pending_rx_head = (uint8_t)((ag_bridge_pending_rx_head + 1U) % AG_BRIDGE_RX_QUEUE_DEPTH);
+            ag_bridge_pending_rx_count++;
             ag_bridge_rx_len = 0;
         }
         return;

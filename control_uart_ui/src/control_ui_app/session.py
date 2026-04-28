@@ -31,6 +31,7 @@ from .hci import (
     COMMAND_BOND,
     COMMAND_BRIDGE_HELLO_CONTROL,
     COMMAND_GET_VERSION,
+    COMMAND_HCI_AUDIO_BUTTON,
     COMMAND_HF_CLOSE_AUDIO,
     COMMAND_HF_CONNECT,
     COMMAND_HF_DISCONNECT,
@@ -83,6 +84,12 @@ else:
 
 
 EventSink = Callable[[str, dict], None]
+
+
+def _is_noisy_audio_payload_packet(packet: Packet) -> bool:
+    if packet.opcode not in {opcode(0x14, 0x0A), opcode(0x29, 0x02)}:
+        return False
+    return len(packet.payload) >= 64
 
 
 @dataclass
@@ -200,7 +207,7 @@ class SerialBridgeSession:
         self._stop_event.clear()
         self._identity_request_attempts = 0
         try:
-            self._serial = serial.Serial(self.info.port, self.info.baud_rate, timeout=0.2)
+            self._serial = serial.Serial(self.info.port, self.info.baud_rate, timeout=0.2, write_timeout=0.2)
             self._serial.reset_input_buffer()
             self._serial.reset_output_buffer()
         except Exception as exc:
@@ -286,6 +293,11 @@ class SerialBridgeSession:
 
     def set_pairing_mode(self, enabled: bool) -> None:
         self.send(COMMAND_SET_PAIRING_MODE, bytes([1 if enabled else 0]))
+
+    def emulate_headset_discoverable_button(self) -> None:
+        # PLAY_PAUSE_BUTTON + VERY_LONG_DURATION + HELD maps to ACTION_BT_DISCOVERABLE.
+        self.send(COMMAND_HCI_AUDIO_BUTTON, bytes([0x00, 0x10, 0x00]))
+        self._log("Requested headset discoverable mode using emulated SW15 very-long press")
 
     def apply_pairable_visibility(self, pairable: bool, visible: bool) -> None:
         self.set_pairing_mode(pairable)
@@ -669,6 +681,8 @@ class SerialBridgeSession:
             self.close()
 
     def _handle_packet(self, packet: Packet) -> None:
+        if _is_noisy_audio_payload_packet(packet):
+            return
         message = decode_rx_message(packet.opcode, packet.payload)
         self._log(message)
 
@@ -818,7 +832,7 @@ class RawTraceSession:
         self._stop_event.clear()
         self._line_buffer.clear()
         try:
-            self._serial = serial.Serial(self.info.port, self.info.baud_rate, timeout=0.2)
+            self._serial = serial.Serial(self.info.port, self.info.baud_rate, timeout=0.2, write_timeout=0.2)
             self._serial.reset_input_buffer()
             self._serial.reset_output_buffer()
         except Exception as exc:

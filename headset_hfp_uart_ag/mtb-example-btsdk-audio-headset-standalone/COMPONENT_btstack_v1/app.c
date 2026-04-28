@@ -170,7 +170,7 @@ wiced_bt_ble_advert_elem_t cy_bt_adv_packet_data[CY_BT_ADV_PACKET_DATA_SIZE] =
     /* Complete local name */
     {
         .advert_type = BTM_BLE_ADVERT_TYPE_NAME_COMPLETE,
-        .len = 5,           // app_gap_device_name_len,
+        .len = 18,
         .p_data = ( uint8_t* )app_gap_device_name,
     },
 };
