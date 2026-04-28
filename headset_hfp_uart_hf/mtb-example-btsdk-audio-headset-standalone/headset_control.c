@@ -139,8 +139,7 @@
 #define HEADSET_HCI_EVENT_BRIDGE_LINE       ((HCI_CONTROL_GROUP_MISC << 8) | 0x25)
 #define HEADSET_PROFILE_SUMMARY             "profiles=LE+A2DP_SINK+AVRCP_CT+AVRCP_TG+HFP_HF audio_role=A2DP_SINK|HF"
 #define HEADSET_PUART_BAUDRATE              921600U
-#define HEADSET_PUART_HELLO_LINE            "BR1,HELLO,HF\r\n"
-#define HEADSET_PUART_HELLO_INTERVAL_SEC    1U
+#define HEADSET_PUART_RX_FLUSH_INTERVAL_SEC 1U
 #define HEADSET_BRIDGE_LINE_MAX             96U
 
 /*****************************************************************************
@@ -168,8 +167,8 @@ static void headset_control_hci_send_version(void);
 static void headset_control_hci_send_local_bda(void);
 static void headset_control_hci_send_snapshot(void);
 static void headset_control_start(uint8_t *p_data, uint32_t data_len);
-static void headset_control_puart_hello_timer_cb(uint32_t arg);
-static void headset_control_start_puart_hello(void);
+static void headset_control_puart_rx_flush_timer_cb(uint32_t arg);
+static void headset_control_start_puart_rx_flush(void);
 static void headset_control_bridge_puart_rx_cb(void *arg);
 static void headset_control_bridge_puart_process_byte(uint8_t byte);
 static void headset_control_bridge_hci_log(const char *prefix, const uint8_t *line, uint16_t line_len);
@@ -256,8 +255,8 @@ typedef struct
 static headset_control_local_irk_info_t local_irk_info = { 0 };
 static uint8_t headset_startup_stage = 0;
 static uint8_t headset_audio_init_result = 0xFF;
-static wiced_timer_t headset_puart_hello_timer;
-static wiced_bool_t headset_puart_hello_timer_initialized = WICED_FALSE;
+static wiced_timer_t headset_puart_rx_flush_timer;
+static wiced_bool_t headset_puart_rx_flush_timer_initialized = WICED_FALSE;
 static uint8_t headset_bridge_rx_line[HEADSET_BRIDGE_LINE_MAX];
 static uint16_t headset_bridge_rx_len = 0;
 static uint8_t headset_bridge_pending_rx_line[HEADSET_BRIDGE_LINE_MAX];
@@ -445,7 +444,7 @@ static void headset_control_hci_send_snapshot(void)
     headset_control_hci_send_audio_init_diag();
 }
 
-static void headset_control_puart_hello_timer_cb(uint32_t arg)
+static void headset_control_puart_rx_flush_timer_cb(uint32_t arg)
 {
     UNUSED_VARIABLE(arg);
     if (headset_bridge_pending_rx_valid)
@@ -454,26 +453,21 @@ static void headset_control_puart_hello_timer_cb(uint32_t arg)
         headset_bridge_pending_rx_valid = WICED_FALSE;
         headset_bridge_pending_rx_len = 0;
     }
-
-    wiced_hal_puart_synchronous_write((uint8_t *)HEADSET_PUART_HELLO_LINE,
-                                      (uint16_t)(sizeof(HEADSET_PUART_HELLO_LINE) - 1));
-    headset_control_bridge_hci_log("TX:", (uint8_t *)HEADSET_PUART_HELLO_LINE,
-                                   (uint16_t)(sizeof(HEADSET_PUART_HELLO_LINE) - 3));
 }
 
-static void headset_control_start_puart_hello(void)
+static void headset_control_start_puart_rx_flush(void)
 {
-    if (!headset_puart_hello_timer_initialized)
+    if (!headset_puart_rx_flush_timer_initialized)
     {
-        wiced_init_timer(&headset_puart_hello_timer,
-                         headset_control_puart_hello_timer_cb,
+        wiced_init_timer(&headset_puart_rx_flush_timer,
+                         headset_control_puart_rx_flush_timer_cb,
                          0,
                          WICED_SECONDS_PERIODIC_TIMER);
-        headset_puart_hello_timer_initialized = WICED_TRUE;
+        headset_puart_rx_flush_timer_initialized = WICED_TRUE;
     }
 
-    wiced_start_timer(&headset_puart_hello_timer, HEADSET_PUART_HELLO_INTERVAL_SEC);
-    headset_control_puart_hello_timer_cb(0);
+    wiced_start_timer(&headset_puart_rx_flush_timer, HEADSET_PUART_RX_FLUSH_INTERVAL_SEC);
+    headset_control_puart_rx_flush_timer_cb(0);
 }
 
 static void headset_control_bridge_hci_log(const char *prefix, const uint8_t *line, uint16_t line_len)
@@ -585,7 +579,7 @@ void btheadset_control_init(void)
     WICED_BT_TRACE("# headset_standalone APP START #\n");
     WICED_BT_TRACE("#########################\n");
     WICED_BT_TRACE("NavTool PUART marker: HFTEST6 baseline on CYBT-343026-EVAL\n");
-    headset_control_start_puart_hello();
+    headset_control_start_puart_rx_flush();
 
 #if defined(CYW20721B2) || defined(CYW20706A2)
     /* Disable secure connection because connection will drop when connecting with Win10 first time */

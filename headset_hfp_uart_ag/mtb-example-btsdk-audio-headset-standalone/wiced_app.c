@@ -80,16 +80,15 @@ static wiced_bt_buffer_pool_t* watch_app_pool_small = NULL;
 
 #define WICED_HS_EIR_BUF_MAX_SIZE 264
 #define APP_PUART_BAUDRATE        921600U
-#define AG_PUART_HELLO_LINE       "BR1,HELLO,AG\r\n"
-#define AG_PUART_HELLO_INTERVAL   1U
+#define AG_PUART_RX_FLUSH_INTERVAL 1U
 #define AG_HCI_EVENT_BRIDGE_LINE  ((HCI_CONTROL_GROUP_MISC << 8) | 0x25)
 #define AG_BRIDGE_LINE_MAX        96U
 
 
 static void write_eir(void);
 static wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data);
-static void ag_puart_hello_timer_cb(uint32_t arg);
-static void ag_start_puart_hello(void);
+static void ag_puart_rx_flush_timer_cb(uint32_t arg);
+static void ag_start_puart_rx_flush(void);
 static void ag_bridge_puart_rx_cb(void *arg);
 static void ag_bridge_puart_process_byte(uint8_t byte);
 static void ag_bridge_hci_log(const char *prefix, const uint8_t *line, uint16_t line_len);
@@ -112,15 +111,15 @@ uint8_t ag_startup_stage = 0;
 uint8_t ag_audio_init_result = 0xFF;
 uint32_t ag_audio_free_before = 0;
 uint32_t ag_audio_free_after = 0;
-static wiced_timer_t ag_puart_hello_timer;
-static wiced_bool_t ag_puart_hello_timer_initialized = WICED_FALSE;
+static wiced_timer_t ag_puart_rx_flush_timer;
+static wiced_bool_t ag_puart_rx_flush_timer_initialized = WICED_FALSE;
 static uint8_t ag_bridge_rx_line[AG_BRIDGE_LINE_MAX];
 static uint16_t ag_bridge_rx_len = 0;
 static uint8_t ag_bridge_pending_rx_line[AG_BRIDGE_LINE_MAX];
 static uint16_t ag_bridge_pending_rx_len = 0;
 static wiced_bool_t ag_bridge_pending_rx_valid = WICED_FALSE;
 
-static void ag_puart_hello_timer_cb(uint32_t arg)
+static void ag_puart_rx_flush_timer_cb(uint32_t arg)
 {
     UNUSED_VARIABLE(arg);
     if (ag_bridge_pending_rx_valid)
@@ -129,23 +128,18 @@ static void ag_puart_hello_timer_cb(uint32_t arg)
         ag_bridge_pending_rx_valid = WICED_FALSE;
         ag_bridge_pending_rx_len = 0;
     }
-
-    wiced_hal_puart_synchronous_write((uint8_t *)AG_PUART_HELLO_LINE,
-                                      (uint16_t)(sizeof(AG_PUART_HELLO_LINE) - 1));
-    ag_bridge_hci_log("TX:", (uint8_t *)AG_PUART_HELLO_LINE,
-                      (uint16_t)(sizeof(AG_PUART_HELLO_LINE) - 3));
 }
 
-static void ag_start_puart_hello(void)
+static void ag_start_puart_rx_flush(void)
 {
-    if (!ag_puart_hello_timer_initialized)
+    if (!ag_puart_rx_flush_timer_initialized)
     {
-        wiced_init_timer(&ag_puart_hello_timer, ag_puart_hello_timer_cb, 0, WICED_SECONDS_PERIODIC_TIMER);
-        ag_puart_hello_timer_initialized = WICED_TRUE;
+        wiced_init_timer(&ag_puart_rx_flush_timer, ag_puart_rx_flush_timer_cb, 0, WICED_SECONDS_PERIODIC_TIMER);
+        ag_puart_rx_flush_timer_initialized = WICED_TRUE;
     }
 
-    wiced_start_timer(&ag_puart_hello_timer, AG_PUART_HELLO_INTERVAL);
-    ag_puart_hello_timer_cb(0);
+    wiced_start_timer(&ag_puart_rx_flush_timer, AG_PUART_RX_FLUSH_INTERVAL);
+    ag_puart_rx_flush_timer_cb(0);
 }
 
 static void ag_bridge_hci_log(const char *prefix, const uint8_t *line, uint16_t line_len)
@@ -254,7 +248,7 @@ APPLICATION_START()
 #endif // NO_PUART_SUPPORT
 #endif // WICED_BT_TRACE_ENABLE
 
-    ag_start_puart_hello();
+    ag_start_puart_rx_flush();
 
     result = app_stack_init();
 

@@ -35,22 +35,21 @@ Confirmed AG side:
 - `CYW20706A2` SDK does not define an AG audio-buffer role bit
 - PUART heartbeat and HCI heartbeat were visible before Phase 1.3 changes
 
-Current Phase 1.3 code staged:
+Current Phase 1.3/2.1 code staged:
 
-- HF transmits `BR1,HELLO,HF\r\n` on PUART once per second
-- AG transmits `BR1,HELLO,AG\r\n` on PUART once per second
 - both boards enable PUART RX and parse bounded line-oriented input
 - both boards mirror bridge TX/RX lines to HCI event `0xFF25`
 - `control_uart_ui` decodes `0xFF25` as `Bridge PUART ...`
 - debug trace is no longer intentionally routed to PUART on these Phase 1.3 paths
+- firmware no longer sends periodic `BR1,HELLO` lines; use the UI PUART Trace pane `Peer Hello` or `Send Line` controls for manual tests
 
 Next lab test:
 
 - rebuild and flash HF and AG
 - first verify each board still reports identity/audio init over HCI
-- watch HCI logs for `Bridge PUART TX:BR1,HELLO,<role>`
-- wire HF PUART TX to AG PUART RX and AG PUART TX to HF PUART RX, with common ground
-- watch for `Bridge PUART RX:BR1,HELLO,<peer-role>` on each HCI port
+- open the UI PUART Trace ports
+- manually send `BR1,HELLO,<peer-role>` or semantic `BR1,...` lines from the UI
+- watch for `[RECEIVED over PUART] BR1,...` on each HCI port
 
 The intended design is:
 

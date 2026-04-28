@@ -264,3 +264,26 @@ If work resumes later, start here:
   - code staged
   - `python -m py_compile` passed for `ui.py`
 - Status: `READY_FOR_HARDWARE_TEST`
+
+## TEST-20260428-07
+
+- Date/Time: 2026-04-28 workspace prep
+- Phase/Topic: Stop periodic PUART hello spam
+- Board(s): HF and AG firmware, UI
+- Files changed:
+  - `headset_hfp_uart_hf/mtb-example-btsdk-audio-headset-standalone/headset_control.c`
+  - `headset_hfp_uart_ag/mtb-example-btsdk-audio-headset-standalone/wiced_app.c`
+  - `control_uart_ui/src/control_ui_app/ui.py`
+- Procedure:
+  - remove automatic periodic `BR1,HELLO,HF` and `BR1,HELLO,AG` transmit from firmware
+  - keep a silent periodic PUART RX flush timer so received lines still appear on HCI as `0xFF25`
+  - remove the confusing control-pane `Send PUART Hello` button
+  - continue using the PUART Trace pane `Peer Hello` and `Send Line` controls for manual tests
+- Expected result:
+  - HCI panes no longer receive periodic `[SENT over PUART] BR1,HELLO,...`
+  - manual UI sends still produce `[RECEIVED over PUART] BR1,...` on the receiving board
+- Actual result:
+  - source changes staged
+  - no remaining firmware `HELLO_LINE`, `synchronous_write`, or bridge `TX:` heartbeat path found
+  - `python -m py_compile` passed for `ui.py`
+- Status: `READY_FOR_BUILD_AND_FLASH`

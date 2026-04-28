@@ -313,7 +313,6 @@ class BridgeApp:
             ttk.Button(actions, text="Refresh Info", command=lambda: self._refresh_board_info("car")).pack(side=tk.LEFT, padx=(0, 4), pady=2)
             ttk.Button(actions, text="Start Inquiry", command=self.car_session.start_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
             ttk.Button(actions, text="Stop Inquiry", command=self.car_session.stop_inquiry).pack(side=tk.LEFT, padx=(0, 4), pady=2)
-            ttk.Button(actions, text="Send PUART Hello", command=lambda: self.car_session.set_bridge_hello(True)).pack(side=tk.LEFT, padx=(0, 4), pady=2)
             ttk.Button(actions, text="Connect Selected", command=self.pair_selected_car_device).pack(side=tk.LEFT, padx=(0, 4), pady=2)
 
         content = ttk.Panedwindow(frame, orient=tk.HORIZONTAL if side == "car" else tk.VERTICAL)
