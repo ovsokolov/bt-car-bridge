@@ -72,7 +72,7 @@ extern uint32_t ag_audio_free_after;
 
 #define HCI_CONTROL_MISC_EVENT_AG_AUDIO_INIT_DIAG   ((HCI_CONTROL_GROUP_MISC << 8) | 0x23)
 #define HCI_CONTROL_MISC_EVENT_PROFILE_SUMMARY      ((HCI_CONTROL_GROUP_MISC << 8) | 0x24)
-static const char bridge_identity_base[] = "NavTool-CarConnect-AGTEST27";
+static const char bridge_identity_base[] = "NavTool-CarConnect-AGTEST63";
 
 /******************************************************************************
  *                          Variable Definitions

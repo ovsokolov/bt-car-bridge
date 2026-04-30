@@ -119,6 +119,8 @@ class BridgeApp:
         self.summary_var = tk.StringVar(value="Ready")
         self._bridge_enabled = True
         self._avrc_bridge_enabled = True
+        self._semantic_puart_injection_enabled = False
+        self._semantic_hci_injection_enabled = False
         self._phone_hf_cind = {
             1: "0",
             2: "0",
@@ -1168,90 +1170,65 @@ class BridgeApp:
             handle, at_text = self._parse_ag_at_payload(payload)
             if at_text:
                 at_upper = at_text.strip().upper()
-                if at_upper.startswith("AT+CHLD"):
-                    if at_upper == "AT+CHLD=0" and self._is_phone_incoming_call_state():
-                        send_state = self._send_or_queue_phone_hf_at(
-                            "AT+CHUP",
-                            "Car AG CHLD=0 reject",
-                            allow_stale_handle=True,
-                        )
-                        if send_state != "dropped":
-                            self._pending_car_at_responses += 1
-                            self._send_car_to_phone_bridge_line(
-                                "BR1,REJECT",
-                                "Car AG AT AT+CHLD=0 -> HF PUART semantic REJECT",
-                            )
-                            self._bridge_trace("Car AG AT AT+CHLD=0 -> Phone HF raw AT AT+CHUP (reject incoming)")
+                if at_upper == "ATA":
+                    now = time.monotonic()
+                    if now - self._last_car_ata_forward_at < 0.35:
+                        self._bridge_trace("Ignored Car AG AT ATA duplicate burst")
                         return
-                    if at_upper in {"AT+CHLD=1", "AT+CHLD=2"} and self._is_phone_incoming_call_state():
+                    self._last_car_ata_forward_at = now
+                    sent = self._send_car_to_phone_bridge_line(
+                        "BR1,ANSWER",
+                        "Car AG AT ATA -> HF PUART semantic ANSWER",
+                    )
+                    if sent:
+                        self._send_car_result("OK", "Car AG AT ATA accepted by PUART bridge")
+                    self._bridge_trace("Car AG AT ATA -> HF PUART semantic ANSWER")
+                    return
+                if at_upper == "AT+CHUP":
+                    bridge_line = "BR1,REJECT" if self._is_phone_incoming_call_state() else "BR1,HANGUP"
+                    sent = self._send_car_to_phone_bridge_line(
+                        bridge_line,
+                        f"Car AG AT AT+CHUP -> HF PUART semantic {bridge_line[4:]}",
+                    )
+                    if sent:
+                        self._send_car_result("OK", "Car AG AT AT+CHUP accepted by PUART bridge")
+                    self._bridge_trace(f"Car AG AT AT+CHUP -> HF PUART semantic {bridge_line[4:]}")
+                    return
+                if at_upper.startswith("AT+CHLD"):
+                    if at_upper == "AT+CHLD=0":
+                        sent = self._send_car_to_phone_bridge_line(
+                            "BR1,REJECT",
+                            "Car AG AT AT+CHLD=0 -> HF PUART semantic REJECT",
+                        )
+                        if sent:
+                            self._send_car_result("OK", "Car AG AT AT+CHLD=0 accepted by PUART bridge")
+                        self._bridge_trace("Car AG AT AT+CHLD=0 -> HF PUART semantic REJECT")
+                        return
+                    if at_upper in {"AT+CHLD=1", "AT+CHLD=2"}:
                         now = time.monotonic()
                         if now - self._last_car_ata_forward_at < 0.35:
                             self._bridge_trace(
                                 f"Ignored Car AG AT {at_text} duplicate burst during incoming-call answer"
                             )
                             return
-                        send_state = self._send_or_queue_phone_hf_at(
-                            "ATA",
-                            f"Car AG {at_text} answer",
-                            allow_stale_handle=True,
+                        self._last_car_ata_forward_at = now
+                        sent = self._send_car_to_phone_bridge_line(
+                            "BR1,ANSWER",
+                            f"Car AG AT {at_text} -> HF PUART semantic ANSWER",
                         )
-                        if send_state != "dropped":
-                            self._pending_car_at_responses += 1
-                            self._car_answer_pending = True
-                            self._last_car_ata_forward_at = now
-                            self._send_car_to_phone_bridge_line(
-                                "BR1,ANSWER",
-                                f"Car AG AT {at_text} -> HF PUART semantic ANSWER",
-                            )
-                            self._bridge_trace(f"Car AG AT {at_text} -> Phone HF raw AT ATA (answer incoming)")
+                        if sent:
+                            self._send_car_result("OK", f"Car AG AT {at_text} accepted by PUART bridge")
+                        self._bridge_trace(f"Car AG AT {at_text} -> HF PUART semantic ANSWER")
                         return
-                    if self._phone_hf_cind[2] != "1" or self._phone_hf_cind[3] != "0":
-                        self._bridge_trace(
-                            f"Ignored Car AG AT {at_text} while call is not active/stable (prevents unsolicited auto-answer)"
-                        )
-                        return
-                    if self.phone_session.info.service_handle <= 0:
-                        self._bridge_trace(
-                            f"Dropped Car AG AT {at_text} because HF service handle is unavailable (avoid stale hold/answer control)"
-                        )
-                        return
+                    self._bridge_trace(f"Ignored unsupported Car AG AT {at_text} in PUART call-control bridge")
+                    return
                 if at_upper.startswith("AT+BCS"):
                     if not (self._is_phone_call_state_busy() or self._is_phone_incoming_call_state()):
                         self._bridge_trace(
                             f"Ignored Car AG AT {at_text} because call state is idle (prevents unsolicited audio negotiation)"
                         )
                         return
-                if at_upper == "ATA":
-                    now = time.monotonic()
-                    if now - self._last_car_ata_forward_at < 0.35:
-                        self._bridge_trace("Ignored Car AG AT ATA duplicate burst")
-                        return
-                    if not self._is_phone_answer_window():
-                        self._bridge_trace("Ignored Car AG AT ATA because no valid incoming-call answer window is active")
-                        return
-                    send_state = self._send_or_queue_phone_hf_at("ATA", "Car AG ATA", allow_stale_handle=True)
-                    if send_state != "dropped":
-                        self._pending_car_at_responses += 1
-                        self._car_answer_pending = True
-                        self._last_car_ata_forward_at = now
-                        self._send_car_to_phone_bridge_line(
-                            "BR1,ANSWER",
-                            "Car AG AT ATA -> HF PUART semantic ANSWER",
-                        )
-                        self._bridge_trace("Car AG AT ATA -> Phone HF raw AT ATA")
-                    return
-                if at_upper == "AT+CHUP":
-                    send_state = self._send_or_queue_phone_hf_at(
-                        at_text,
-                        f"Car AG AT {at_text}",
-                        allow_stale_handle=True,
-                    )
-                    if send_state != "dropped":
-                        self._send_car_to_phone_bridge_line(
-                            "BR1,HANGUP",
-                            "Car AG AT AT+CHUP -> HF PUART semantic HANGUP",
-                        )
-                elif at_upper == "AT+CLCC":
+                if at_upper == "AT+CLCC":
                     self._pending_car_clcc_requests += 1
                     allow_stale_clcc = self._is_phone_incoming_call_state() or self._phone_hf_cind[2] == "1"
                     send_state = self._send_or_queue_phone_hf_at(
@@ -1391,6 +1368,9 @@ class BridgeApp:
         )
 
     def _send_car_result(self, text: str, trace: str) -> None:
+        if not self._semantic_hci_injection_enabled:
+            self._bridge_trace(f"Skipped UI HCI semantic AG send '{text}': firmware owns bridge traffic ({trace})")
+            return
         if self.car_session.info.service_handle <= 0:
             if len(self._pending_car_results) >= 60:
                 self._pending_car_results.pop(0)
@@ -1404,6 +1384,9 @@ class BridgeApp:
         )
 
     def _send_phone_to_car_bridge_line(self, line: str, reason: str) -> bool:
+        if not self._semantic_puart_injection_enabled:
+            self._bridge_trace(f"Skipped UI semantic injection {line}: firmware/PUART relay owns bridge traffic ({reason})")
+            return False
         return self._send_bridge_protocol_line("car_trace", line, reason)
 
     def _send_phone_incoming_bridge_line_once(self, reason: str) -> None:
@@ -1429,6 +1412,9 @@ class BridgeApp:
         self._send_phone_to_car_bridge_line(f"BR1,CID,{clip_number}", reason)
 
     def _send_car_to_phone_bridge_line(self, line: str, reason: str) -> bool:
+        if not self._semantic_puart_injection_enabled:
+            self._bridge_trace(f"Skipped UI semantic injection {line}: firmware/PUART relay owns bridge traffic ({reason})")
+            return False
         return self._send_bridge_protocol_line("phone_trace", line, reason)
 
     def _send_bridge_protocol_line(self, target_key: str, line: str, reason: str) -> bool:
@@ -1448,6 +1434,10 @@ class BridgeApp:
         return True
 
     def _flush_pending_car_results(self) -> None:
+        if not self._semantic_hci_injection_enabled:
+            if self._pending_car_results:
+                self._pending_car_results.clear()
+            return
         if self.car_session.info.service_handle <= 0 or not self._pending_car_results:
             return
         self._send_car_cind_update("Flushing queued phone->car AG results")

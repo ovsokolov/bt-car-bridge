@@ -778,14 +778,14 @@ static void hci_control_connection_status_cb( wiced_bt_device_address_t bd_addr,
             }
             else if ( ag_hfp_connect_pending )
             {
-                hci_control_send_bridge_status_line( "AUTORECONNECT:BR_EDR down while HFP pending" );
+                hci_control_send_bridge_status_line( "AUTORECONNECT:BR_EDR down while HFP pending; passive" );
                 ag_hfp_connect_pending = WICED_FALSE;
-                hci_control_start_auto_reconnect_retry();
+                hci_control_stop_auto_reconnect_retry();
             }
             else
             {
-                hci_control_send_bridge_status_line( "AUTORECONNECT:BR_EDR link down retry scheduled" );
-                hci_control_start_auto_reconnect_retry();
+                hci_control_send_bridge_status_line( "AUTORECONNECT:BR_EDR link down; passive wait peer" );
+                hci_control_stop_auto_reconnect_retry();
             }
         }
     }

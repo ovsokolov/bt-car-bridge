@@ -60,6 +60,16 @@
 void hci_control_ag_init( void );
 
 /*
+ * Handle semantic bridge lines received over PUART.
+ */
+void hci_control_ag_bridge_handle_line( const uint8_t *line, uint16_t line_len );
+
+/*
+ * Called from the app timer context to answer pending car CLCC requests.
+ */
+void hci_control_ag_bridge_flush_pending_clcc( void );
+
+/*
  * Handle Handsfree commands received over UART.
  */
 void hci_control_ag_handle_command( uint16_t opcode, uint8_t* p_data, uint32_t length );

@@ -257,14 +257,22 @@ static wiced_bool_t ag_get_last_bonded_device(wiced_bt_device_address_t bd_addr)
 static void ag_puart_rx_flush_timer_cb(uint32_t arg)
 {
     UNUSED_VARIABLE(arg);
+
     while (ag_bridge_pending_rx_count != 0U)
     {
         uint8_t tail = ag_bridge_pending_rx_tail;
 
         ag_bridge_hci_log("RX:", ag_bridge_pending_rx_line[tail], ag_bridge_pending_rx_len[tail]);
+#ifdef WICED_APP_HFP_AG_INCLUDED
+        hci_control_ag_bridge_handle_line(ag_bridge_pending_rx_line[tail], ag_bridge_pending_rx_len[tail]);
+#endif
         ag_bridge_pending_rx_tail = (uint8_t)((ag_bridge_pending_rx_tail + 1U) % AG_BRIDGE_RX_QUEUE_DEPTH);
         ag_bridge_pending_rx_count--;
     }
+
+#ifdef WICED_APP_HFP_AG_INCLUDED
+    hci_control_ag_bridge_flush_pending_clcc();
+#endif
 }
 
 static void ag_start_puart_rx_flush(void)
@@ -794,8 +802,8 @@ wiced_result_t btm_enabled_event_handler(wiced_bt_dev_enabled_t *event_data)
     if (ag_get_last_bonded_device(bonded_addr))
     {
         ag_autoreconnect_retry_count = 0;
-        WICED_BT_TRACE("[AUTO_AG] boot bonded peer <%B>; auto reconnect disabled for initial-connect debug\n", bonded_addr);
-        hci_control_send_bridge_status_line("AUTO_AG:boot disabled bonded peer");
+        WICED_BT_TRACE("[AUTO_AG] boot bonded peer <%B>; passive connectable wait\n", bonded_addr);
+        hci_control_send_bridge_status_line("AUTO_AG:boot passive wait peer");
     }
     else
     {
