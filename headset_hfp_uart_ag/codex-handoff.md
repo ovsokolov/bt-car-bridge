@@ -17,6 +17,11 @@ This workspace is the AG-side firmware for the bridge concept. The board should 
 - Added explicit handling for host unbond commands in the firmware device command switch so host-side re-pair testing can remove existing bonds cleanly.
 - Added the missing forward declaration for the local bonded-device delete helper so the new unbond handler builds cleanly.
 - Added explicit handling for `HCI_CONTROL_COMMAND_BOND` so host-side bonding requests now invoke BR/EDR security bonding instead of being ignored.
+- Added the firmware-owned car-action return path over PUART:
+  - car `ATA`, `AT+CHLD=1`, or `AT+CHLD=2` queues `BR1,ANSWER`
+  - car `AT+CHLD=0` queues `BR1,REJECT`
+  - car `AT+CHUP` queues `BR1,REJECT` while incoming, otherwise `BR1,HANGUP`
+  - AG flushes those queued commands from the bridge timer context, not from the AG parser path
 
 ## AG Cleanup Summary
 The old wrapper included custom state management to make a car and ClientControl behave as if a real phone were present:
@@ -36,9 +41,10 @@ That logic was removed so the bridge can be driven by actual external phone/car 
 ## Open Work
 - Rebuild and validate AG firmware behavior after cleanup.
 - Confirm no repeated synthetic ring behavior remains.
-- Add only the host-visible events/commands needed for the new bridge workflow.
+- Keep the bridge semantic path firmware-owned over PUART; the UI should observe and log, not translate HFP call actions.
 - Continue reducing assumptions inherited from the old watch-derived project where necessary.
 - Validate PIN-based car pairing and numeric-comparison pairing with the updated Python UI.
+- After flashing AG and HF, validate car-screen answer/reject/end and look for `AG_CMD:TX BR1,...` followed by HF `HF_CMD:... sent to phone`.
 
 ## Cautions
 - Shared SDK library code still references `hci_control_ag_local_call_state_update`, so the symbol remains as a no-op wrapper hook.

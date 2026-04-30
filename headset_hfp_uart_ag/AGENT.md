@@ -20,6 +20,7 @@ This project is the `CarConnect` firmware for the `CYBT-343026-EVAL` dev kit. It
 - Device name should remain `NavTool-CarConnect` unless requirements explicitly change.
 - Legacy fake-phone/ring state simulation added for ClientControl compatibility has been removed from the AG wrapper.
 - Firmware emits a custom bridge identity event so host tools can identify the connected board over serial.
+- HFP call-control bridge actions are firmware-owned over PUART: the AG side observes car AT actions and sends `BR1,ANSWER`, `BR1,REJECT`, or `BR1,HANGUP` to the HF side.
 - This project is part of a three-project system:
   - `headset_hfp_ag` = car-facing AG firmware
   - `headset_hfp_hf` = phone-facing HF firmware

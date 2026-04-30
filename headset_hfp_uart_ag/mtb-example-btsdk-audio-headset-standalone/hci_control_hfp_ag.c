@@ -43,6 +43,7 @@
 
 #include "hci_control_api.h"
 #include "wiced_bt_trace.h"
+#include "wiced_hal_puart.h"
 #include "hci_control_hfp_ag.h"
 #include "hci_control.h"
 
@@ -56,6 +57,10 @@
 
 #define AG_BRIDGE_AG_STR_MAX        64U
 #define AG_BRIDGE_CIND_STRING_LEN   13U
+#define AG_BRIDGE_CAR_CMD_QUEUE_DEPTH 8U
+#define AG_BRIDGE_CAR_CMD_ANSWER    1U
+#define AG_BRIDGE_CAR_CMD_REJECT    2U
+#define AG_BRIDGE_CAR_CMD_HANGUP    3U
 
 /******************************************************
  *               Variables Definitions
@@ -67,6 +72,10 @@ static char ag_bridge_callsetup_state = '0';
 static char ag_bridge_callheld_state = '0';
 static wiced_bool_t ag_bridge_clcc_pending = WICED_FALSE;
 static uint16_t ag_bridge_clcc_handle = 0;
+static uint8_t ag_bridge_pending_car_cmd[AG_BRIDGE_CAR_CMD_QUEUE_DEPTH];
+static uint8_t ag_bridge_pending_car_cmd_head = 0;
+static uint8_t ag_bridge_pending_car_cmd_tail = 0;
+static uint8_t ag_bridge_pending_car_cmd_count = 0;
 
 static void hci_control_ag_bridge_log_prefixed_text( const char *prefix, const char *text )
 {
@@ -98,6 +107,99 @@ static void hci_control_ag_bridge_log_prefixed_text( const char *prefix, const c
     line[prefix_len + copy_len] = '\0';
 
     hci_control_send_bridge_status_line(line);
+}
+
+static char hci_control_ag_bridge_upper_char( char c )
+{
+    if ( ( c >= 'a' ) && ( c <= 'z' ) )
+    {
+        return (char)( c - ( 'a' - 'A' ) );
+    }
+
+    return c;
+}
+
+static wiced_bool_t hci_control_ag_bridge_at_matches( const uint8_t *cmd,
+                                                      uint16_t cmd_len,
+                                                      const char *text )
+{
+    uint16_t start = 0;
+    uint16_t end = cmd_len;
+    uint16_t index;
+    uint16_t text_len;
+
+    if ( ( cmd == NULL ) || ( text == NULL ) )
+    {
+        return WICED_FALSE;
+    }
+
+    while ( ( start < end ) &&
+            ( ( cmd[start] == ' ' ) || ( cmd[start] == '\t' ) || ( cmd[start] == '\0' ) ) )
+    {
+        start++;
+    }
+
+    while ( ( end > start ) &&
+            ( ( cmd[end - 1U] == ' ' ) ||
+              ( cmd[end - 1U] == '\t' ) ||
+              ( cmd[end - 1U] == '\r' ) ||
+              ( cmd[end - 1U] == '\n' ) ||
+              ( cmd[end - 1U] == '\0' ) ) )
+    {
+        end--;
+    }
+
+    text_len = (uint16_t)strlen(text);
+    if ( ( end - start ) != text_len )
+    {
+        return WICED_FALSE;
+    }
+
+    for ( index = 0; index < text_len; index++ )
+    {
+        if ( hci_control_ag_bridge_upper_char((char)cmd[start + index]) != text[index] )
+        {
+            return WICED_FALSE;
+        }
+    }
+
+    return WICED_TRUE;
+}
+
+static void hci_control_ag_bridge_queue_car_cmd( uint8_t cmd )
+{
+    if ( ag_bridge_pending_car_cmd_count >= AG_BRIDGE_CAR_CMD_QUEUE_DEPTH )
+    {
+        ag_bridge_pending_car_cmd_tail =
+            (uint8_t)( ( ag_bridge_pending_car_cmd_tail + 1U ) % AG_BRIDGE_CAR_CMD_QUEUE_DEPTH );
+        ag_bridge_pending_car_cmd_count--;
+    }
+
+    ag_bridge_pending_car_cmd[ag_bridge_pending_car_cmd_head] = cmd;
+    ag_bridge_pending_car_cmd_head =
+        (uint8_t)( ( ag_bridge_pending_car_cmd_head + 1U ) % AG_BRIDGE_CAR_CMD_QUEUE_DEPTH );
+    ag_bridge_pending_car_cmd_count++;
+}
+
+static void hci_control_ag_bridge_send_puart_line( const char *line )
+{
+    uint16_t index;
+    uint16_t line_len;
+
+    if ( line == NULL )
+    {
+        return;
+    }
+
+    line_len = (uint16_t)strlen(line);
+    for ( index = 0; index < line_len; index++ )
+    {
+        wiced_hal_puart_write((uint8_t)line[index]);
+    }
+    wiced_hal_puart_write('\r');
+    wiced_hal_puart_write('\n');
+
+    hci_control_ag_bridge_log_prefixed_text("AG_CMD:TX ", line);
 }
 
 static void hci_control_ag_bridge_send_ag_str( hfp_ag_session_cb_t *p_scb, const char *text )
@@ -433,6 +535,65 @@ void hci_control_ag_bridge_flush_pending_clcc( void )
 
     hci_control_send_bridge_status_line("AG_CALL:CLCC req");
     hci_control_ag_bridge_send_clcc_response(p_scb);
+}
+
+void hci_control_ag_bridge_note_car_at_command( const uint8_t *cmd, uint16_t cmd_len )
+{
+    if ( ( cmd == NULL ) || ( cmd_len == 0U ) )
+    {
+        return;
+    }
+
+    if ( hci_control_ag_bridge_at_matches(cmd, cmd_len, "ATA") ||
+         hci_control_ag_bridge_at_matches(cmd, cmd_len, "AT+CHLD=1") ||
+         hci_control_ag_bridge_at_matches(cmd, cmd_len, "AT+CHLD=2") )
+    {
+        hci_control_ag_bridge_queue_car_cmd(AG_BRIDGE_CAR_CMD_ANSWER);
+        return;
+    }
+
+    if ( hci_control_ag_bridge_at_matches(cmd, cmd_len, "AT+CHLD=0") )
+    {
+        hci_control_ag_bridge_queue_car_cmd(AG_BRIDGE_CAR_CMD_REJECT);
+        return;
+    }
+
+    if ( hci_control_ag_bridge_at_matches(cmd, cmd_len, "AT+CHUP") )
+    {
+        hci_control_ag_bridge_queue_car_cmd(
+            ( ag_bridge_callsetup_state == '1' ) ?
+                AG_BRIDGE_CAR_CMD_REJECT : AG_BRIDGE_CAR_CMD_HANGUP);
+    }
+}
+
+void hci_control_ag_bridge_flush_pending_car_commands( void )
+{
+    while ( ag_bridge_pending_car_cmd_count != 0U )
+    {
+        uint8_t cmd = ag_bridge_pending_car_cmd[ag_bridge_pending_car_cmd_tail];
+
+        ag_bridge_pending_car_cmd_tail =
+            (uint8_t)( ( ag_bridge_pending_car_cmd_tail + 1U ) % AG_BRIDGE_CAR_CMD_QUEUE_DEPTH );
+        ag_bridge_pending_car_cmd_count--;
+
+        switch ( cmd )
+        {
+        case AG_BRIDGE_CAR_CMD_ANSWER:
+            hci_control_ag_bridge_send_puart_line("BR1,ANSWER");
+            break;
+
+        case AG_BRIDGE_CAR_CMD_REJECT:
+            hci_control_ag_bridge_send_puart_line("BR1,REJECT");
+            break;
+
+        case AG_BRIDGE_CAR_CMD_HANGUP:
+            hci_control_ag_bridge_send_puart_line("BR1,HANGUP");
+            break;
+
+        default:
+            break;
+        }
+    }
 }
 
 void hci_control_ag_bridge_handle_line( const uint8_t *line, uint16_t line_len )

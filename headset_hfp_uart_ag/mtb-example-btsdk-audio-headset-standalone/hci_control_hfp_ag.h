@@ -70,6 +70,12 @@ void hci_control_ag_bridge_handle_line( const uint8_t *line, uint16_t line_len )
 void hci_control_ag_bridge_flush_pending_clcc( void );
 
 /*
+ * Record and flush car-originated call-control commands observed by the AG parser.
+ */
+void hci_control_ag_bridge_note_car_at_command( const uint8_t *cmd, uint16_t cmd_len );
+void hci_control_ag_bridge_flush_pending_car_commands( void );
+
+/*
  * Handle Handsfree commands received over UART.
  */
 void hci_control_ag_handle_command( uint16_t opcode, uint8_t* p_data, uint32_t length );

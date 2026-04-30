@@ -272,6 +272,7 @@ static void ag_puart_rx_flush_timer_cb(uint32_t arg)
 
 #ifdef WICED_APP_HFP_AG_INCLUDED
     hci_control_ag_bridge_flush_pending_clcc();
+    hci_control_ag_bridge_flush_pending_car_commands();
 #endif
 }
 

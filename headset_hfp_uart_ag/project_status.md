@@ -18,14 +18,19 @@ This project is the `CarConnect` firmware workspace for the car-facing side of t
 - Firmware now explicitly handles host unbond commands so devkit-side bonds can be removed during repeated pairing tests.
 - Unbond handler build issue fixed by declaring the local bonded-device delete helper before first use.
 - Firmware now explicitly handles host bond commands so the Python UI can initiate BR/EDR pairing from the devkit side.
+- Car-originated HFP actions now have a firmware PUART return path:
+  - AG observes car `ATA` / `AT+CHLD=1` / `AT+CHLD=2` and queues `BR1,ANSWER` to the HF board.
+  - AG observes car `AT+CHLD=0` and queues `BR1,REJECT` to the HF board.
+  - AG observes car `AT+CHUP` and queues `BR1,REJECT` while incoming, otherwise `BR1,HANGUP`.
 
 ## In Progress
 - Shifting the project from ClientControl-oriented simulation toward real bridge-driven behavior.
-- Aligning host-visible events with the new Python control application.
+- Aligning firmware PUART bridge behavior with real car and phone HFP actions.
 
 ## Pending
 - Build and flash verification after cleanup.
 - Car-side validation with real bridge-driven HFP events.
+- Validate that car-screen answer/reject/end actions produce `AG_CMD:TX BR1,ANSWER/REJECT/HANGUP`, then confirm HF reports `HF_CMD:ANSWER/HANGUP sent to phone`.
 - Review A2DP/AVRCP support needed for the broader bridge plan.
 - Add any missing host commands/events required for pairing, state sync, and bridge diagnostics.
 - Validate PIN-based car pairing and numeric-comparison pairing with the updated Python UI.

@@ -1,7 +1,7 @@
 diff --git a/headset_hfp_uart_ag/mtb_shared/wiced_btsdk/dev-kit/libraries/btsdk-audio/release-v4.9.5/COMPONENT_hfp_audio_gateway/hfp_ag.c b/headset_hfp_uart_ag/mtb_shared/wiced_btsdk/dev-kit/libraries/btsdk-audio/release-v4.9.5/COMPONENT_hfp_audio_gateway/hfp_ag.c
 --- a/headset_hfp_uart_ag/mtb_shared/wiced_btsdk/dev-kit/libraries/btsdk-audio/release-v4.9.5/COMPONENT_hfp_audio_gateway/hfp_ag.c
 +++ b/headset_hfp_uart_ag/mtb_shared/wiced_btsdk/dev-kit/libraries/btsdk-audio/release-v4.9.5/COMPONENT_hfp_audio_gateway/hfp_ag.c
-@@ -370,6 +370,16 @@ void hfp_ag_service_level_up( hfp_ag_session_cb_t *p_scb )
+@@ -370,6 +370,28 @@ void hfp_ag_service_level_up( hfp_ag_session_cb_t *p_scb )
      }
  }
  
@@ -15,16 +15,32 @@ diff --git a/headset_hfp_uart_ag/mtb_shared/wiced_btsdk/dev-kit/libraries/btsdk-
 +    (void)handle;
 +}
 +
++/*
++ * Optional app-side bridge hook for car-originated AT commands.
++ * The default implementation is intentionally inert; app firmware may use it
++ * to record a pending semantic bridge command and transmit later from app
++ * context.
++ */
++__attribute__((weak)) void hci_control_ag_bridge_note_car_at_command( const uint8_t *cmd, uint16_t cmd_len )
++{
++    (void)cmd;
++    (void)cmd_len;
++}
++
  /*
   * HF event callback. Format the data to be sent over the UART
   *
-@@ -386,6 +396,11 @@ void hfp_ag_hci_send_ag_event( uint16_t evt, uint16_t handle, hfp_ag_event_t *p_
+@@ -386,6 +408,15 @@ void hfp_ag_hci_send_ag_event( uint16_t evt, uint16_t handle, hfp_ag_event_t *p_
  
      WICED_BT_TRACE("[%u]hfp_ag_hci_send_ag_event: Sending Event: %u  to UART\n", handle, evt);
  
 +    if ( evt == HCI_CONTROL_AG_EVENT_CLCC_REQ )
 +    {
 +        hci_control_ag_bridge_on_clcc_req( handle );
++    }
++    else if ( ( evt == HCI_CONTROL_AG_EVENT_AT_CMD ) && ( p_data != NULL ) )
++    {
++        hci_control_ag_bridge_note_car_at_command( p_data->at_cmd.cmd_ptr, p_data->at_cmd.cmd_len );
 +    }
 +
      *p++ = ( uint8_t ) ( handle );
