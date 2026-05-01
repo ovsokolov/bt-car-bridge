@@ -183,6 +183,16 @@ static void headset_control_bridge_handle_line(const uint8_t *line, uint16_t lin
 static void headset_control_bridge_hci_log(const char *prefix, const uint8_t *line, uint16_t line_len);
 static void headset_control_bridge_hfp_event_post_handler(wiced_bt_hfp_hf_event_t event,
                                                           wiced_bt_hfp_hf_event_data_t *p_data);
+static void headset_control_bridge_avrc_connection_state_post_handler(uint8_t handle,
+                                                                      wiced_bt_device_address_t remote_addr,
+                                                                      wiced_result_t status,
+                                                                      wiced_bt_avrc_ct_connection_state_t connection_state,
+                                                                      uint32_t peer_features);
+#if BTSTACK_VER >= 0x03000001
+static void headset_control_bridge_avrc_response_post_handler(uint8_t handle, wiced_bt_avrc_rsp_t *avrc_rsp);
+#else
+static void headset_control_bridge_avrc_response_post_handler(uint8_t handle, wiced_bt_avrc_response_t *avrc_rsp);
+#endif
 static void headset_control_diag_logf(const char *fmt, ...);
 static void headset_control_diag_log_pcm_config(const char *tag);
 static void headset_control_diag_log_sco_event(wiced_bt_management_evt_t event,
@@ -317,6 +327,8 @@ static wiced_bool_t headset_bridge_active_sent = WICED_FALSE;
 static char headset_bridge_last_cid[WICED_BT_HFP_HF_CALLER_NUMBER_MAX_LENGTH];
 static wiced_bool_t headset_hfp_last_codec_valid = WICED_FALSE;
 static wiced_bt_hfp_hf_codec_t headset_hfp_last_codec = WICED_BT_HFP_HF_CVSD_CODEC;
+static uint8_t headset_bridge_avrc_handle = 0;
+static wiced_bool_t headset_bridge_avrc_connected = WICED_FALSE;
 
 struct headset_control_mic_data_info_t
 {
@@ -1380,6 +1392,197 @@ static void headset_control_bridge_perform_call_action(wiced_bool_t is_answer,
     }
 }
 
+static void headset_control_bridge_queue_play_status(uint8_t play_state, uint32_t song_len, uint32_t song_pos)
+{
+    char line[HEADSET_BRIDGE_LINE_MAX] = "BR1,PLAYSTATUS,";
+    uint16_t len = (uint16_t)strlen(line);
+
+    headset_control_diag_append_unsigned(line, &len, play_state);
+    headset_control_diag_append_char(line, &len, ',');
+    headset_control_diag_append_unsigned(line, &len, song_len);
+    headset_control_diag_append_char(line, &len, ',');
+    headset_control_diag_append_unsigned(line, &len, song_pos);
+
+    headset_control_bridge_queue_tx_line((const uint8_t *)line, len);
+}
+
+static const char *headset_control_bridge_metadata_prefix(uint32_t attr_id)
+{
+    switch (attr_id)
+    {
+    case AVRC_MEDIA_ATTR_ID_TITLE:
+        return "BR1,META,TITLE,";
+
+    case AVRC_MEDIA_ATTR_ID_ARTIST:
+        return "BR1,META,ARTIST,";
+
+    case AVRC_MEDIA_ATTR_ID_ALBUM:
+        return "BR1,META,ALBUM,";
+
+    case AVRC_MEDIA_ATTR_ID_TRACK_NUM:
+        return "BR1,META,TRACK,";
+
+    case AVRC_MEDIA_ATTR_ID_NUM_TRACKS:
+        return "BR1,META,TOTAL,";
+
+    case AVRC_MEDIA_ATTR_ID_GENRE:
+        return "BR1,META,GENRE,";
+
+    case AVRC_MEDIA_ATTR_ID_PLAYING_TIME:
+        return "BR1,META,TIME,";
+
+    default:
+        return NULL;
+    }
+}
+
+static void headset_control_bridge_queue_metadata_attr(uint32_t attr_id,
+                                                       const uint8_t *p_text,
+                                                       uint16_t text_len)
+{
+    const char *prefix = headset_control_bridge_metadata_prefix(attr_id);
+    uint8_t line[HEADSET_BRIDGE_LINE_MAX];
+    uint16_t prefix_len;
+    uint16_t len = 0;
+    uint16_t index;
+
+    if ((prefix == NULL) || (p_text == NULL))
+    {
+        return;
+    }
+
+    prefix_len = (uint16_t)strlen(prefix);
+    for (index = 0; (index < prefix_len) && (len < sizeof(line)); index++)
+    {
+        line[len++] = (uint8_t)prefix[index];
+    }
+
+    for (index = 0; (index < text_len) && (len < sizeof(line)); index++)
+    {
+        if ((p_text[index] != '\r') && (p_text[index] != '\n'))
+        {
+            line[len++] = p_text[index];
+        }
+    }
+
+    if (len > prefix_len)
+    {
+        headset_control_bridge_queue_tx_line(line, len);
+    }
+}
+
+static void headset_control_bridge_request_media_state(void)
+{
+    uint8_t attrs[] =
+    {
+        AVRC_MEDIA_ATTR_ID_TITLE,
+        AVRC_MEDIA_ATTR_ID_ARTIST,
+        AVRC_MEDIA_ATTR_ID_ALBUM,
+        AVRC_MEDIA_ATTR_ID_TRACK_NUM,
+        AVRC_MEDIA_ATTR_ID_NUM_TRACKS,
+        AVRC_MEDIA_ATTR_ID_GENRE,
+        AVRC_MEDIA_ATTR_ID_PLAYING_TIME
+    };
+
+    if (headset_bridge_avrc_connected == WICED_FALSE)
+    {
+        headset_control_diag_logf("HF_MEDIA:no phone AVRCP link");
+        return;
+    }
+
+    headset_control_diag_logf("HF_MEDIA:request metadata/status handle=%u", headset_bridge_avrc_handle);
+    wiced_bt_avrc_ct_get_element_attr_cmd(headset_bridge_avrc_handle, 0, (uint8_t)sizeof(attrs), attrs);
+    wiced_bt_avrc_ct_get_play_status_cmd(headset_bridge_avrc_handle);
+}
+
+static wiced_result_t headset_control_bridge_send_avrc_passthrough(uint8_t op_id, const char *name)
+{
+    wiced_result_t result;
+
+    if (headset_bridge_avrc_connected == WICED_FALSE)
+    {
+        headset_control_diag_logf("HF_MEDIA:%s no phone AVRCP link", name);
+        return WICED_ERROR;
+    }
+
+#if BTSTACK_VER >= 0x03000001
+    result = wiced_bt_avrc_ct_send_pass_through_cmd(headset_bridge_avrc_handle,
+                                                    op_id,
+                                                    AVRC_STATE_PRESS,
+                                                    0);
+#else
+    result = wiced_bt_avrc_ct_send_pass_through_cmd(headset_bridge_avrc_handle,
+                                                    op_id,
+                                                    AVRC_STATE_PRESS,
+                                                    0,
+                                                    NULL);
+#endif
+    headset_control_diag_logf("HF_MEDIA:%s op=0x%02X result=%u", name, op_id, result);
+
+    if ((result == WICED_SUCCESS) &&
+        ((op_id == AVRC_ID_FORWARD) || (op_id == AVRC_ID_BACKWARD) ||
+         (op_id == AVRC_ID_PLAY) || (op_id == AVRC_ID_PAUSE) ||
+         (op_id == AVRC_ID_STOP)))
+    {
+        headset_control_bridge_request_media_state();
+    }
+
+    return result;
+}
+
+static wiced_bool_t headset_control_bridge_handle_media_line(const uint8_t *line, uint16_t line_len)
+{
+    if (headset_control_bridge_line_matches(line, line_len, "BR1,MEDIA,PLAY"))
+    {
+        headset_control_bridge_send_avrc_passthrough(AVRC_ID_PLAY, "PLAY");
+        return WICED_TRUE;
+    }
+
+    if (headset_control_bridge_line_matches(line, line_len, "BR1,MEDIA,PAUSE"))
+    {
+        headset_control_bridge_send_avrc_passthrough(AVRC_ID_PAUSE, "PAUSE");
+        return WICED_TRUE;
+    }
+
+    if (headset_control_bridge_line_matches(line, line_len, "BR1,MEDIA,STOP"))
+    {
+        headset_control_bridge_send_avrc_passthrough(AVRC_ID_STOP, "STOP");
+        return WICED_TRUE;
+    }
+
+    if (headset_control_bridge_line_matches(line, line_len, "BR1,MEDIA,NEXT"))
+    {
+        headset_control_bridge_send_avrc_passthrough(AVRC_ID_FORWARD, "NEXT");
+        return WICED_TRUE;
+    }
+
+    if (headset_control_bridge_line_matches(line, line_len, "BR1,MEDIA,PREV"))
+    {
+        headset_control_bridge_send_avrc_passthrough(AVRC_ID_BACKWARD, "PREV");
+        return WICED_TRUE;
+    }
+
+    if (headset_control_bridge_line_matches(line, line_len, "BR1,MEDIA,VOLUP"))
+    {
+        headset_control_bridge_send_avrc_passthrough(AVRC_ID_VOL_UP, "VOLUP");
+        return WICED_TRUE;
+    }
+
+    if (headset_control_bridge_line_matches(line, line_len, "BR1,MEDIA,VOLDOWN"))
+    {
+        headset_control_bridge_send_avrc_passthrough(AVRC_ID_VOL_DOWN, "VOLDOWN");
+        return WICED_TRUE;
+    }
+
+    if (headset_control_bridge_line_matches(line, line_len, "BR1,MEDIA,META"))
+    {
+        headset_control_bridge_request_media_state();
+        return WICED_TRUE;
+    }
+
+    return WICED_FALSE;
+}
+
 static void headset_control_bridge_handle_line(const uint8_t *line, uint16_t line_len)
 {
     if ((line == NULL) || (line_len < 4U))
@@ -1400,12 +1603,171 @@ static void headset_control_bridge_handle_line(const uint8_t *line, uint16_t lin
         return;
     }
 
+    if (headset_control_bridge_handle_media_line(line, line_len))
+    {
+        return;
+    }
+
     if (headset_control_bridge_line_matches(line, line_len, "BR1,IGNORE"))
     {
         static const uint8_t ignored[] = "HF_CMD:IGNORE no phone action";
         headset_control_bridge_hci_log("", ignored, sizeof(ignored) - 1U);
     }
 }
+
+static void headset_control_bridge_avrc_connection_state_post_handler(uint8_t handle,
+                                                                      wiced_bt_device_address_t remote_addr,
+                                                                      wiced_result_t status,
+                                                                      wiced_bt_avrc_ct_connection_state_t connection_state,
+                                                                      uint32_t peer_features)
+{
+    UNUSED_VARIABLE(remote_addr);
+    UNUSED_VARIABLE(status);
+
+    headset_control_diag_logf("HF_MEDIA:AVRCP state=%u handle=%u features=0x%X",
+                              connection_state,
+                              handle,
+                              peer_features);
+
+    if (connection_state == REMOTE_CONTROL_CONNECTED)
+    {
+        headset_bridge_avrc_handle = handle;
+        headset_bridge_avrc_connected = WICED_TRUE;
+        headset_control_bridge_request_media_state();
+    }
+    else if (connection_state == REMOTE_CONTROL_DISCONNECTED)
+    {
+        headset_bridge_avrc_connected = WICED_FALSE;
+        headset_bridge_avrc_handle = 0;
+    }
+}
+
+#if BTSTACK_VER >= 0x03000001
+static void headset_control_bridge_avrc_response_post_handler(uint8_t handle, wiced_bt_avrc_rsp_t *avrc_rsp)
+{
+    uint8_t pdu;
+
+    UNUSED_VARIABLE(handle);
+
+    if (avrc_rsp == NULL)
+    {
+        return;
+    }
+
+    if (avrc_rsp->hdr.opcode == AVRC_OP_BROWSE)
+    {
+        pdu = avrc_rsp->type.browse_rsp.pdu_id;
+    }
+    else
+    {
+        pdu = avrc_rsp->type.metadata.metadata_hdr.pdu;
+    }
+
+    if (pdu == AVRC_PDU_GET_ELEMENT_ATTR)
+    {
+        wiced_bt_avrc_attr_entry_t attr_entry;
+        int offset = 0;
+        uint8_t attr_index;
+        wiced_bt_avrc_metadata_get_element_attrs_rsp_t *elem_attrs_rsp =
+            &avrc_rsp->type.metadata.u.get_elem_attrs;
+
+        for (attr_index = 0; attr_index < elem_attrs_rsp->num_attr; attr_index++)
+        {
+            int read = wiced_bt_avrc_parse_get_element_attr_rsp_from_stream(
+                elem_attrs_rsp->p_attr_stream + offset,
+                (elem_attrs_rsp->length - offset),
+                &attr_entry);
+
+            if (read < 0)
+            {
+                break;
+            }
+
+            offset += read;
+            headset_control_bridge_queue_metadata_attr(attr_entry.attr_id,
+                                                       attr_entry.name.name.p_str,
+                                                       attr_entry.name.name.str_len);
+        }
+    }
+    else if (pdu == AVRC_PDU_GET_PLAY_STATUS)
+    {
+        headset_control_bridge_queue_play_status(avrc_rsp->type.metadata.u.get_play_status.play_status,
+                                                 avrc_rsp->type.metadata.u.get_play_status.song_len,
+                                                 avrc_rsp->type.metadata.u.get_play_status.song_pos);
+    }
+    else if (pdu == AVRC_PDU_REGISTER_NOTIFICATION)
+    {
+        uint8_t event_id = avrc_rsp->type.metadata.u.reg_notif.event_id;
+
+        if (event_id == AVRC_EVT_PLAY_STATUS_CHANGE)
+        {
+            headset_control_bridge_queue_play_status(avrc_rsp->type.metadata.u.reg_notif.param.play_status, 0, 0);
+        }
+        else if (event_id == AVRC_EVT_TRACK_CHANGE)
+        {
+            headset_control_bridge_request_media_state();
+        }
+    }
+}
+#else
+static void headset_control_bridge_avrc_response_post_handler(uint8_t handle, wiced_bt_avrc_response_t *avrc_rsp)
+{
+    uint8_t attr_index;
+
+    UNUSED_VARIABLE(handle);
+
+    if (avrc_rsp == NULL)
+    {
+        return;
+    }
+
+    switch (avrc_rsp->pdu)
+    {
+    case AVRC_PDU_GET_ELEMENT_ATTR:
+        if (avrc_rsp->rsp.status != AVRC_STS_NO_ERROR)
+        {
+            headset_control_diag_logf("HF_MEDIA:metadata rsp status=0x%02X", avrc_rsp->rsp.status);
+            break;
+        }
+
+        for (attr_index = 0; attr_index < avrc_rsp->get_elem_attrs.num_attr; attr_index++)
+        {
+            headset_control_bridge_queue_metadata_attr(avrc_rsp->get_elem_attrs.p_attrs[attr_index].attr_id,
+                                                       avrc_rsp->get_elem_attrs.p_attrs[attr_index].name.p_str,
+                                                       avrc_rsp->get_elem_attrs.p_attrs[attr_index].name.str_len);
+        }
+        break;
+
+    case AVRC_PDU_GET_PLAY_STATUS:
+        if (avrc_rsp->get_play_status.status == AVRC_STS_NO_ERROR)
+        {
+            headset_control_bridge_queue_play_status(avrc_rsp->get_play_status.play_status,
+                                                     avrc_rsp->get_play_status.song_len,
+                                                     avrc_rsp->get_play_status.song_pos);
+        }
+        else
+        {
+            headset_control_diag_logf("HF_MEDIA:playstatus rsp status=0x%02X",
+                                      avrc_rsp->get_play_status.status);
+        }
+        break;
+
+    case AVRC_PDU_REGISTER_NOTIFICATION:
+        if (avrc_rsp->reg_notif.event_id == AVRC_EVT_PLAY_STATUS_CHANGE)
+        {
+            headset_control_bridge_queue_play_status(avrc_rsp->reg_notif.param.play_status, 0, 0);
+        }
+        else if (avrc_rsp->reg_notif.event_id == AVRC_EVT_TRACK_CHANGE)
+        {
+            headset_control_bridge_request_media_state();
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+#endif
 
 static void headset_control_bridge_hfp_event_post_handler(wiced_bt_hfp_hf_event_t event,
                                                           wiced_bt_hfp_hf_event_data_t *p_data)
@@ -1651,6 +2013,10 @@ wiced_result_t btheadset_post_bt_init(void)
     config.audio.a2dp.post_handler          = NULL;
 #endif
     config.audio.avrc_ct.p_supported_events = bt_avrc_ct_supported_events;
+    config.audio.avrc_ct.connection_state_cb.post_handler =
+        headset_control_bridge_avrc_connection_state_post_handler;
+    config.audio.avrc_ct.rsp_cb.post_handler =
+        headset_control_bridge_avrc_response_post_handler;
     config.hfp.rfcomm.buffer_size           = 700;
     config.hfp.rfcomm.buffer_count          = 4;
     config.hfp.post_handler                 = headset_control_bridge_hfp_event_post_handler;

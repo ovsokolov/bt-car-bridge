@@ -65,6 +65,11 @@ void hci_control_ag_init( void );
 void hci_control_ag_bridge_handle_line( const uint8_t *line, uint16_t line_len );
 
 /*
+ * Send semantic bridge lines over PUART.
+ */
+void hci_control_ag_bridge_send_puart_line( const char *line );
+
+/*
  * Called from the app timer context to answer pending car CLCC requests.
  */
 void hci_control_ag_bridge_flush_pending_clcc( void );

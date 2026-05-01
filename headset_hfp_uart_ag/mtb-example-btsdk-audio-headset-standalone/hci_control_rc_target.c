@@ -39,6 +39,7 @@
 #include "hci_control.h"
 #include "wiced_bt_avrc_tg.h"
 #include "hci_control_rc_target.h"
+#include "hci_control_hfp_ag.h"
 #include "hci_control_audio.h"
 #include "string.h"
 #include "wiced_transport.h"
@@ -117,6 +118,55 @@ void app_avrc_device_disconnected(uint16_t handle)
 wiced_bool_t hci_control_rc_target_is_connected(void)
 {
     return hci_control_rc_target_cb.connected;
+}
+
+void hci_control_rc_target_bridge_update_track_attr(uint8_t attr_id,
+                                                    const uint8_t *p_text,
+                                                    uint16_t text_len)
+{
+#ifdef APP_AVRC_TRACK_INFO_SUPPORTED
+    uint16_t copy_len;
+    wiced_bt_avrc_tg_track_attr_t track_attr = {0};
+
+    if ( ( attr_id > APP_AVRC_MAX_ATTR ) || ( p_text == NULL ) )
+    {
+        return;
+    }
+
+    copy_len = ( text_len < APP_AVRC_MAX_ATTR_LEN ) ? text_len : APP_AVRC_MAX_ATTR_LEN;
+    memcpy(track_attr.p_str, p_text, copy_len);
+    track_attr.p_str[copy_len] = '\0';
+    track_attr.attr_id = attr_id;
+    track_attr.str_len = (uint8_t)copy_len;
+
+    WICED_BT_TRACE( "[%s] attr_id %d len %d\n\r", __FUNCTION__, attr_id, copy_len );
+    wiced_bt_rc_set_track_info(&track_attr);
+    wiced_bt_rc_track_changed();
+#else
+    UNUSED_VARIABLE(attr_id);
+    UNUSED_VARIABLE(p_text);
+    UNUSED_VARIABLE(text_len);
+#endif
+}
+
+void hci_control_rc_target_bridge_update_player_status(uint8_t play_state,
+                                                       uint32_t song_len,
+                                                       uint32_t song_pos)
+{
+#ifdef APP_AVRC_PLAY_STATUS_SUPPORTED
+    wiced_bt_avrc_tg_play_status_t play_status;
+
+    play_status.play_state = play_state;
+    play_status.song_len = song_len;
+    play_status.song_pos = song_pos;
+
+    WICED_BT_TRACE( "[%s] state %d len %d pos %d\n\r", __FUNCTION__, play_state, song_len, song_pos );
+    wiced_bt_rc_set_player_status(&play_status);
+#else
+    UNUSED_VARIABLE(play_state);
+    UNUSED_VARIABLE(song_len);
+    UNUSED_VARIABLE(song_pos);
+#endif
 }
 
 #ifdef APP_AVRC_TRACK_INFO_SUPPORTED
@@ -432,18 +482,23 @@ static void hci_control_rc_target_passthrough_cmd_event(wiced_bt_avrc_tg_passthr
     {
     case APP_AVRC_EVENT_PASSTHROUGH_CMD_PLAY:
         wiced_evt_opcode = HCI_CONTROL_AVRC_TARGET_EVENT_PLAY;
+        hci_control_ag_bridge_send_puart_line("BR1,MEDIA,PLAY");
         break;
     case APP_AVRC_EVENT_PASSTHROUGH_CMD_PAUSE:
         wiced_evt_opcode = HCI_CONTROL_AVRC_TARGET_EVENT_PAUSE;
+        hci_control_ag_bridge_send_puart_line("BR1,MEDIA,PAUSE");
         break;
     case APP_AVRC_EVENT_PASSTHROUGH_CMD_STOP:
         wiced_evt_opcode = HCI_CONTROL_AVRC_TARGET_EVENT_STOP;
+        hci_control_ag_bridge_send_puart_line("BR1,MEDIA,STOP");
         break;
     case APP_AVRC_EVENT_PASSTHROUGH_CMD_NEXT_TRACK:
         wiced_evt_opcode = HCI_CONTROL_AVRC_TARGET_EVENT_NEXT_TRACK;
+        hci_control_ag_bridge_send_puart_line("BR1,MEDIA,NEXT");
         break;
     case APP_AVRC_EVENT_PASSTHROUGH_CMD_PREVIOUS_TRACK:
         wiced_evt_opcode = HCI_CONTROL_AVRC_TARGET_EVENT_PREVIOUS_TRACK;
+        hci_control_ag_bridge_send_puart_line("BR1,MEDIA,PREV");
         break;
     default:
         WICED_BT_TRACE( "[%s] Unknown cmd:%d\n\r", __FUNCTION__, p_passthrough->command );

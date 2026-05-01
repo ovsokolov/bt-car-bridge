@@ -45,6 +45,7 @@
 #include "wiced_bt_trace.h"
 #include "wiced_hal_puart.h"
 #include "hci_control_hfp_ag.h"
+#include "hci_control_rc_target.h"
 #include "hci_control.h"
 
 #include "wiced_bt_hfp_ag.h"
@@ -181,7 +182,7 @@ static void hci_control_ag_bridge_queue_car_cmd( uint8_t cmd )
     ag_bridge_pending_car_cmd_count++;
 }
 
-static void hci_control_ag_bridge_send_puart_line( const char *line )
+void hci_control_ag_bridge_send_puart_line( const char *line )
 {
     uint16_t index;
     uint16_t line_len;
@@ -266,6 +267,169 @@ static wiced_bool_t hci_control_ag_bridge_line_starts_with( const uint8_t *line,
     uint16_t text_len = (uint16_t)strlen(text);
 
     return ( ( line_len >= text_len ) && ( memcmp(line, text, text_len) == 0 ) ) ? WICED_TRUE : WICED_FALSE;
+}
+
+static wiced_bool_t hci_control_ag_bridge_parse_u32( const uint8_t *line,
+                                                     uint16_t line_len,
+                                                     uint16_t *p_index,
+                                                     uint32_t *p_value )
+{
+    uint32_t value = 0;
+    uint16_t index;
+    wiced_bool_t seen_digit = WICED_FALSE;
+
+    if ( ( line == NULL ) || ( p_index == NULL ) || ( p_value == NULL ) )
+    {
+        return WICED_FALSE;
+    }
+
+    index = *p_index;
+    while ( index < line_len )
+    {
+        uint8_t c = line[index];
+
+        if ( c == ',' )
+        {
+            break;
+        }
+
+        if ( ( c < '0' ) || ( c > '9' ) )
+        {
+            return WICED_FALSE;
+        }
+
+        seen_digit = WICED_TRUE;
+        value = ( value * 10U ) + (uint32_t)( c - '0' );
+        index++;
+    }
+
+    if ( seen_digit == WICED_FALSE )
+    {
+        return WICED_FALSE;
+    }
+
+    *p_value = value;
+    *p_index = index;
+    return WICED_TRUE;
+}
+
+static wiced_bool_t hci_control_ag_bridge_update_media_attr( const uint8_t *line,
+                                                             uint16_t line_len,
+                                                             const char *prefix,
+                                                             uint8_t attr_id )
+{
+    uint16_t prefix_len = (uint16_t)strlen(prefix);
+
+    if ( hci_control_ag_bridge_line_starts_with(line, line_len, prefix) == WICED_FALSE )
+    {
+        return WICED_FALSE;
+    }
+
+    hci_control_rc_target_bridge_update_track_attr(attr_id,
+                                                   &line[prefix_len],
+                                                   (uint16_t)(line_len - prefix_len));
+    hci_control_send_bridge_status_line("AG_MEDIA:metadata update");
+    return WICED_TRUE;
+}
+
+static wiced_bool_t hci_control_ag_bridge_handle_media_line( const uint8_t *line, uint16_t line_len )
+{
+    uint16_t index;
+    uint32_t play_state;
+    uint32_t song_len;
+    uint32_t song_pos;
+    static const char playstatus_prefix[] = "BR1,PLAYSTATUS,";
+
+    if ( hci_control_ag_bridge_update_media_attr(line,
+                                                 line_len,
+                                                 "BR1,META,TITLE,",
+                                                 AVRC_MEDIA_ATTR_ID_TITLE) )
+    {
+        return WICED_TRUE;
+    }
+
+    if ( hci_control_ag_bridge_update_media_attr(line,
+                                                 line_len,
+                                                 "BR1,META,ARTIST,",
+                                                 AVRC_MEDIA_ATTR_ID_ARTIST) )
+    {
+        return WICED_TRUE;
+    }
+
+    if ( hci_control_ag_bridge_update_media_attr(line,
+                                                 line_len,
+                                                 "BR1,META,ALBUM,",
+                                                 AVRC_MEDIA_ATTR_ID_ALBUM) )
+    {
+        return WICED_TRUE;
+    }
+
+    if ( hci_control_ag_bridge_update_media_attr(line,
+                                                 line_len,
+                                                 "BR1,META,TRACK,",
+                                                 AVRC_MEDIA_ATTR_ID_TRACK_NUM) )
+    {
+        return WICED_TRUE;
+    }
+
+    if ( hci_control_ag_bridge_update_media_attr(line,
+                                                 line_len,
+                                                 "BR1,META,TOTAL,",
+                                                 AVRC_MEDIA_ATTR_ID_NUM_TRACKS) )
+    {
+        return WICED_TRUE;
+    }
+
+    if ( hci_control_ag_bridge_update_media_attr(line,
+                                                 line_len,
+                                                 "BR1,META,GENRE,",
+                                                 AVRC_MEDIA_ATTR_ID_GENRE) )
+    {
+        return WICED_TRUE;
+    }
+
+    if ( hci_control_ag_bridge_update_media_attr(line,
+                                                 line_len,
+                                                 "BR1,META,TIME,",
+                                                 AVRC_MEDIA_ATTR_ID_PLAYING_TIME) )
+    {
+        return WICED_TRUE;
+    }
+
+    if ( hci_control_ag_bridge_line_starts_with(line, line_len, playstatus_prefix) == WICED_FALSE )
+    {
+        return WICED_FALSE;
+    }
+
+    index = (uint16_t)(sizeof(playstatus_prefix) - 1U);
+    if ( hci_control_ag_bridge_parse_u32(line, line_len, &index, &play_state) == WICED_FALSE )
+    {
+        return WICED_TRUE;
+    }
+    if ( ( index >= line_len ) || ( line[index] != ',' ) )
+    {
+        return WICED_TRUE;
+    }
+    index++;
+
+    if ( hci_control_ag_bridge_parse_u32(line, line_len, &index, &song_len) == WICED_FALSE )
+    {
+        return WICED_TRUE;
+    }
+    if ( ( index >= line_len ) || ( line[index] != ',' ) )
+    {
+        return WICED_TRUE;
+    }
+    index++;
+
+    if ( hci_control_ag_bridge_parse_u32(line, line_len, &index, &song_pos) == WICED_FALSE )
+    {
+        return WICED_TRUE;
+    }
+
+    hci_control_rc_target_bridge_update_player_status((uint8_t)play_state, song_len, song_pos);
+    hci_control_send_bridge_status_line("AG_MEDIA:playstatus update");
+    return WICED_TRUE;
 }
 
 static void hci_control_ag_bridge_save_cid( const uint8_t *caller_id, uint16_t caller_id_len )
@@ -624,6 +788,11 @@ void hci_control_ag_bridge_handle_line( const uint8_t *line, uint16_t line_len )
     hfp_ag_session_cb_t *p_scb;
 
     if ( ( line == NULL ) || ( line_len < 4U ) )
+    {
+        return;
+    }
+
+    if ( hci_control_ag_bridge_handle_media_line(line, line_len) )
     {
         return;
     }

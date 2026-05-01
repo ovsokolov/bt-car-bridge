@@ -45,6 +45,16 @@ void hci_control_rc_target_init( void );
  * AVRC connection processing. Check if AVRC Target is connected.
  */
 wiced_bool_t hci_control_rc_target_is_connected(void);
+
+/*
+ * Update target metadata/play status from the bridge peer.
+ */
+void hci_control_rc_target_bridge_update_track_attr(uint8_t attr_id,
+                                                    const uint8_t *p_text,
+                                                    uint16_t text_len);
+void hci_control_rc_target_bridge_update_player_status(uint8_t play_state,
+                                                       uint32_t song_len,
+                                                       uint32_t song_pos);
 /*
  * AVRC connection processing.  Pass connected device address and handle to the MCU.
  */
