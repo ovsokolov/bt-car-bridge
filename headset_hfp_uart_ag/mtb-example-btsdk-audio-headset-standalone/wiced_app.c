@@ -81,7 +81,7 @@ static wiced_bt_buffer_pool_t* watch_app_pool_small = NULL;
 
 #define WICED_HS_EIR_BUF_MAX_SIZE 264
 #define APP_PUART_BAUDRATE        921600U
-#define AG_PUART_RX_FLUSH_INTERVAL 1U
+#define AG_PUART_RX_FLUSH_INTERVAL_MS 50U
 #define AG_HCI_EVENT_BRIDGE_LINE  ((HCI_CONTROL_GROUP_MISC << 8) | 0x25)
 #define AG_BRIDGE_LINE_MAX        96U
 #define AG_BRIDGE_RX_QUEUE_DEPTH  8U
@@ -280,11 +280,11 @@ static void ag_start_puart_rx_flush(void)
 {
     if (!ag_puart_rx_flush_timer_initialized)
     {
-        wiced_init_timer(&ag_puart_rx_flush_timer, ag_puart_rx_flush_timer_cb, 0, WICED_SECONDS_PERIODIC_TIMER);
+        wiced_init_timer(&ag_puart_rx_flush_timer, ag_puart_rx_flush_timer_cb, 0, WICED_MILLI_SECONDS_PERIODIC_TIMER);
         ag_puart_rx_flush_timer_initialized = WICED_TRUE;
     }
 
-    wiced_start_timer(&ag_puart_rx_flush_timer, AG_PUART_RX_FLUSH_INTERVAL);
+    wiced_start_timer(&ag_puart_rx_flush_timer, AG_PUART_RX_FLUSH_INTERVAL_MS);
     ag_puart_rx_flush_timer_cb(0);
 }
 

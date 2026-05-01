@@ -568,6 +568,15 @@ void hci_control_ag_bridge_note_car_at_command( const uint8_t *cmd, uint16_t cmd
 
 void hci_control_ag_bridge_flush_pending_car_commands( void )
 {
+    hfp_ag_session_cb_t *p_scb;
+
+    if ( ag_bridge_pending_car_cmd_count == 0U )
+    {
+        return;
+    }
+
+    p_scb = hci_control_ag_bridge_get_car_scb();
+
     while ( ag_bridge_pending_car_cmd_count != 0U )
     {
         uint8_t cmd = ag_bridge_pending_car_cmd[ag_bridge_pending_car_cmd_tail];
@@ -579,14 +588,28 @@ void hci_control_ag_bridge_flush_pending_car_commands( void )
         switch ( cmd )
         {
         case AG_BRIDGE_CAR_CMD_ANSWER:
+            if ( p_scb != NULL )
+            {
+                hci_control_ag_bridge_set_call_state(p_scb, '1', '0', '0', "AG_CALL:local answer");
+            }
             hci_control_ag_bridge_send_puart_line("BR1,ANSWER");
             break;
 
         case AG_BRIDGE_CAR_CMD_REJECT:
+            if ( p_scb != NULL )
+            {
+                hci_control_ag_bridge_set_call_state(p_scb, '0', '0', '0', "AG_CALL:local reject");
+                ag_bridge_caller_id[0] = '\0';
+            }
             hci_control_ag_bridge_send_puart_line("BR1,REJECT");
             break;
 
         case AG_BRIDGE_CAR_CMD_HANGUP:
+            if ( p_scb != NULL )
+            {
+                hci_control_ag_bridge_set_call_state(p_scb, '0', '0', '0', "AG_CALL:local hangup");
+                ag_bridge_caller_id[0] = '\0';
+            }
             hci_control_ag_bridge_send_puart_line("BR1,HANGUP");
             break;
 

@@ -83,6 +83,7 @@
  */
 #include <bt_hs_spk_handsfree.h>
 #include <wiced_hal_puart.h>
+#include <stdarg.h>
 #include "headset_control.h"
 #include "headset_control_le.h"
 #include "wiced_bt_gatt.h"
@@ -92,6 +93,7 @@
 #include "wiced_memory.h"
 #include "wiced_bt_sdp.h"
 #include "wiced_bt_dev.h"
+#include "wiced_bt_a2d_sbc.h"
 #include "bt_hs_spk_control.h"
 #include "wiced_platform.h"
 #include "wiced_app.h"
@@ -108,6 +110,7 @@
 #if defined(CYW20706A2)
 #include "bt_hs_spk_audio.h"
 #include "wiced_hal_cpu_clk.h"
+#include "wiced_hal_pcm.h"
 #endif // defined(CYW20706A2)
 #include "wiced_hal_gpio.h"
 #include "hci_control_api.h"
@@ -133,17 +136,17 @@
 **  Constants
 *****************************************************************************/
 #define HEADSET_CONTROL_MIC_DATA_BUFFER_LEN 1024    // bytes
-#define HEADSET_IDENTITY_BASE               "NavTool-PhoneConnect-HFTEST13"
+#define HEADSET_IDENTITY_BASE               "NavTool-PhoneConnect-HFTEST14"
 #define HEADSET_HCI_EVENT_STARTUP_STAGE     ((HCI_CONTROL_GROUP_MISC << 8) | 0x22)
 #define HEADSET_HCI_EVENT_AUDIO_INIT_DIAG   ((HCI_CONTROL_GROUP_MISC << 8) | 0x23)
 #define HEADSET_HCI_EVENT_PROFILE_SUMMARY   ((HCI_CONTROL_GROUP_MISC << 8) | 0x24)
 #define HEADSET_HCI_EVENT_BRIDGE_LINE       ((HCI_CONTROL_GROUP_MISC << 8) | 0x25)
-#define HEADSET_PROFILE_SUMMARY             "profiles=LE+A2DP_SINK+AVRCP_CT+AVRCP_TG+HFP_HF audio_role=A2DP_SINK|HF"
+#define HEADSET_PROFILE_SUMMARY             "profiles=LE+A2DP_SINK+AVRCP_CT+AVRCP_TG+HFP_HF audio_role=A2DP_SINK|HF audio_sink=I2S_MASTER"
 #define HEADSET_PUART_BAUDRATE              921600U
 #define HEADSET_PUART_RX_FLUSH_INTERVAL_SEC 1U
 #define HEADSET_AUTORECONNECT_DELAY_SEC     2U
 #define HEADSET_AUTORECONNECT_RETRY_SEC     10U
-#define HEADSET_BRIDGE_LINE_MAX             96U
+#define HEADSET_BRIDGE_LINE_MAX             160U
 #define HEADSET_BRIDGE_RX_QUEUE_DEPTH       8U
 #define HEADSET_BRIDGE_TX_QUEUE_DEPTH       8U
 
@@ -180,6 +183,14 @@ static void headset_control_bridge_handle_line(const uint8_t *line, uint16_t lin
 static void headset_control_bridge_hci_log(const char *prefix, const uint8_t *line, uint16_t line_len);
 static void headset_control_bridge_hfp_event_post_handler(wiced_bt_hfp_hf_event_t event,
                                                           wiced_bt_hfp_hf_event_data_t *p_data);
+static void headset_control_diag_logf(const char *fmt, ...);
+static void headset_control_diag_log_pcm_config(const char *tag);
+static void headset_control_diag_log_sco_event(wiced_bt_management_evt_t event,
+                                               wiced_bt_management_evt_data_t *p_event_data);
+#if defined(CYW20706A2)
+static void headset_control_diag_log_a2dp_event(wiced_bt_a2dp_sink_event_t event,
+                                                wiced_bt_a2dp_sink_event_data_t *p_data);
+#endif
 static void headset_control_bridge_queue_tx_line(const uint8_t *line, uint16_t line_len);
 static void headset_control_bridge_flush_tx_queue(void);
 static void headset_control_auto_reconnect_timer_cb(uint32_t arg);
@@ -304,6 +315,8 @@ static wiced_bool_t headset_bridge_call_seen = WICED_FALSE;
 static wiced_bool_t headset_bridge_incoming_sent = WICED_FALSE;
 static wiced_bool_t headset_bridge_active_sent = WICED_FALSE;
 static char headset_bridge_last_cid[WICED_BT_HFP_HF_CALLER_NUMBER_MAX_LENGTH];
+static wiced_bool_t headset_hfp_last_codec_valid = WICED_FALSE;
+static wiced_bt_hfp_hf_codec_t headset_hfp_last_codec = WICED_BT_HFP_HF_CVSD_CODEC;
 
 struct headset_control_mic_data_info_t
 {
@@ -531,6 +544,408 @@ static void headset_control_bridge_hci_log(const char *prefix, const uint8_t *li
     memcpy(&payload[prefix_len], line, safe_len);
     wiced_transport_send_data(HEADSET_HCI_EVENT_BRIDGE_LINE, payload, prefix_len + safe_len);
 }
+
+static void headset_control_diag_append_char(char *line, uint16_t *p_len, char ch)
+{
+    if (*p_len < (HEADSET_BRIDGE_LINE_MAX - 1U))
+    {
+        line[*p_len] = ch;
+        (*p_len)++;
+        line[*p_len] = '\0';
+    }
+}
+
+static void headset_control_diag_append_str(char *line, uint16_t *p_len, const char *str)
+{
+    if (str == NULL)
+    {
+        str = "(null)";
+    }
+
+    while (*str != '\0')
+    {
+        headset_control_diag_append_char(line, p_len, *str);
+        str++;
+    }
+}
+
+static void headset_control_diag_append_unsigned(char *line, uint16_t *p_len, uint32_t value)
+{
+    char digits[10];
+    uint8_t digit_count = 0;
+
+    do
+    {
+        digits[digit_count] = (char)('0' + (value % 10U));
+        digit_count++;
+        value /= 10U;
+    } while ((value != 0U) && (digit_count < sizeof(digits)));
+
+    while (digit_count != 0U)
+    {
+        digit_count--;
+        headset_control_diag_append_char(line, p_len, digits[digit_count]);
+    }
+}
+
+static void headset_control_diag_append_hex(char *line, uint16_t *p_len, uint32_t value, uint8_t min_width)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    char digits[8];
+    uint8_t digit_count = 0;
+
+    do
+    {
+        digits[digit_count] = hex[value & 0x0FU];
+        digit_count++;
+        value >>= 4U;
+    } while ((value != 0U) && (digit_count < sizeof(digits)));
+
+    while (digit_count < min_width)
+    {
+        digits[digit_count] = '0';
+        digit_count++;
+    }
+
+    while (digit_count != 0U)
+    {
+        digit_count--;
+        headset_control_diag_append_char(line, p_len, digits[digit_count]);
+    }
+}
+
+static void headset_control_diag_logf(const char *fmt, ...)
+{
+    char line[HEADSET_BRIDGE_LINE_MAX] = { 0 };
+    uint16_t len = 0;
+    va_list args;
+
+    va_start(args, fmt);
+    while ((fmt != NULL) && (*fmt != '\0'))
+    {
+        if (*fmt != '%')
+        {
+            headset_control_diag_append_char(line, &len, *fmt);
+            fmt++;
+            continue;
+        }
+
+        fmt++;
+
+        if (*fmt == '%')
+        {
+            headset_control_diag_append_char(line, &len, '%');
+            fmt++;
+            continue;
+        }
+
+        if ((fmt[0] == '0') && (fmt[1] == '2') && (fmt[2] == 'X'))
+        {
+            headset_control_diag_append_hex(line, &len, (uint32_t)va_arg(args, unsigned int), 2U);
+            fmt += 3;
+            continue;
+        }
+
+        if ((fmt[0] == 'l') && (fmt[1] == 'u'))
+        {
+            headset_control_diag_append_unsigned(line, &len, (uint32_t)va_arg(args, unsigned long));
+            fmt += 2;
+            continue;
+        }
+
+        switch (*fmt)
+        {
+        case 's':
+            headset_control_diag_append_str(line, &len, va_arg(args, const char *));
+            break;
+
+        case 'u':
+            headset_control_diag_append_unsigned(line, &len, (uint32_t)va_arg(args, unsigned int));
+            break;
+
+        case 'X':
+            headset_control_diag_append_hex(line, &len, (uint32_t)va_arg(args, unsigned int), 1U);
+            break;
+
+        default:
+            headset_control_diag_append_char(line, &len, '%');
+            headset_control_diag_append_char(line, &len, *fmt);
+            break;
+        }
+
+        fmt++;
+    }
+    va_end(args);
+
+    if (len == 0U)
+    {
+        return;
+    }
+
+    WICED_BT_TRACE("%s\n", line);
+    headset_control_bridge_hci_log("", (const uint8_t *)line, len);
+}
+
+static const char *headset_control_audio_sink_name(am_audio_io_device_t sink)
+{
+    switch (sink)
+    {
+    case AM_SPEAKERS:
+        return "AM_SPEAKERS";
+
+    case AM_HEADPHONES:
+        return "AM_HEADPHONES";
+
+    case AM_UART:
+        return "AM_UART";
+
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static const char *headset_control_hfp_codec_name(wiced_bt_hfp_hf_codec_t codec)
+{
+    switch (codec)
+    {
+    case WICED_BT_HFP_HF_CVSD_CODEC:
+        return "CVSD";
+
+    case WICED_BT_HFP_HF_MSBC_CODEC:
+        return "mSBC";
+
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static uint32_t headset_control_hfp_codec_sample_rate(wiced_bt_hfp_hf_codec_t codec)
+{
+    switch (codec)
+    {
+    case WICED_BT_HFP_HF_CVSD_CODEC:
+        return 8000U;
+
+    case WICED_BT_HFP_HF_MSBC_CODEC:
+        return 16000U;
+
+    default:
+        return 0U;
+    }
+}
+
+static const char *headset_control_a2dp_codec_name(wiced_bt_a2dp_codec_t codec)
+{
+    switch (codec)
+    {
+    case WICED_BT_A2DP_CODEC_SBC:
+        return "SBC";
+
+    case WICED_BT_A2DP_CODEC_M12:
+        return "MPEG1/2";
+
+    case WICED_BT_A2DP_CODEC_M24:
+        return "AAC";
+
+    case WICED_BT_A2DP_CODEC_VENDOR_SPECIFIC:
+        return "VENDOR";
+
+    default:
+        return "UNKNOWN";
+    }
+}
+
+static uint32_t headset_control_a2dp_sbc_sample_rate(uint8_t samp_freq)
+{
+    switch (samp_freq)
+    {
+    case A2D_SBC_IE_SAMP_FREQ_16:
+        return 16000U;
+
+    case A2D_SBC_IE_SAMP_FREQ_32:
+        return 32000U;
+
+    case A2D_SBC_IE_SAMP_FREQ_44:
+        return 44100U;
+
+    case A2D_SBC_IE_SAMP_FREQ_48:
+        return 48000U;
+
+    default:
+        return 0U;
+    }
+}
+
+static const char *headset_control_a2dp_sbc_channel_mode_name(uint8_t ch_mode)
+{
+    switch (ch_mode)
+    {
+    case A2D_SBC_IE_CH_MD_MONO:
+        return "mono";
+
+    case A2D_SBC_IE_CH_MD_DUAL:
+        return "dual";
+
+    case A2D_SBC_IE_CH_MD_STEREO:
+        return "stereo";
+
+    case A2D_SBC_IE_CH_MD_JOINT:
+        return "joint-stereo";
+
+    default:
+        return "unknown";
+    }
+}
+
+static uint8_t headset_control_a2dp_sbc_channel_count(uint8_t ch_mode)
+{
+    return (ch_mode == A2D_SBC_IE_CH_MD_MONO) ? 1U : 2U;
+}
+
+static void headset_control_diag_log_pcm_config(const char *tag)
+{
+#if defined(CYW20706A2)
+    wiced_hal_pcm_config_t *p_pcm_config = wiced_hal_get_pcm_config();
+
+    if (p_pcm_config != NULL)
+    {
+        headset_control_diag_logf("HF_AUDIO:%s pcm_mode=%s role=%s sink=%s",
+                                  tag,
+                                  (p_pcm_config->mode == WICED_HAL_I2S_MODE) ? "I2S" : "PCM",
+                                  (p_pcm_config->role == WICED_HAL_I2SPCM_MASTER) ? "master" : "slave",
+                                  headset_control_audio_sink_name(bt_hs_spk_get_audio_sink()));
+    }
+    else
+    {
+        headset_control_diag_logf("HF_AUDIO:%s pcm_config=NULL sink=%s",
+                                  tag,
+                                  headset_control_audio_sink_name(bt_hs_spk_get_audio_sink()));
+    }
+#else
+    headset_control_diag_logf("HF_AUDIO:%s sink=%s",
+                              tag,
+                              headset_control_audio_sink_name(bt_hs_spk_get_audio_sink()));
+#endif
+}
+
+static void headset_control_diag_log_sco_event(wiced_bt_management_evt_t event,
+                                               wiced_bt_management_evt_data_t *p_event_data)
+{
+    if (p_event_data == NULL)
+    {
+        return;
+    }
+
+    switch (event)
+    {
+    case BTM_SCO_CONNECTED_EVT:
+        headset_control_diag_logf("HF_AUDIO:HFP_SCO connected sco_index=%u codec=%s sample_rate=%luHz codec_valid=%u sink=%s",
+                                  p_event_data->sco_connected.sco_index,
+                                  headset_control_hfp_codec_name(headset_hfp_last_codec),
+                                  (unsigned long)headset_control_hfp_codec_sample_rate(headset_hfp_last_codec),
+                                  headset_hfp_last_codec_valid,
+                                  headset_control_audio_sink_name(bt_hs_spk_get_audio_sink()));
+        headset_control_diag_log_pcm_config("HFP_SCO_CONNECTED");
+        break;
+
+    case BTM_SCO_DISCONNECTED_EVT:
+        headset_control_diag_logf("HF_AUDIO:HFP_SCO disconnected sco_index=%u",
+                                  p_event_data->sco_disconnected.sco_index);
+        break;
+
+    case BTM_SCO_CONNECTION_REQUEST_EVT:
+        headset_control_diag_logf("HF_AUDIO:HFP_SCO request sco_index=%u link_type=%u",
+                                  p_event_data->sco_connection_request.sco_index,
+                                  p_event_data->sco_connection_request.link_type);
+        break;
+
+    case BTM_SCO_CONNECTION_CHANGE_EVT:
+        headset_control_diag_logf("HF_AUDIO:HFP_SCO change sco_index=%u status=0x%02X rx_len=%u tx_len=%u tx_interval=%u",
+                                  p_event_data->sco_connection_change.sco_index,
+                                  p_event_data->sco_connection_change.hci_status,
+                                  p_event_data->sco_connection_change.rx_pkt_len,
+                                  p_event_data->sco_connection_change.tx_pkt_len,
+                                  p_event_data->sco_connection_change.tx_interval);
+        break;
+
+    default:
+        break;
+    }
+}
+
+#if defined(CYW20706A2)
+static void headset_control_diag_log_a2dp_event(wiced_bt_a2dp_sink_event_t event,
+                                                wiced_bt_a2dp_sink_event_data_t *p_data)
+{
+    if (p_data == NULL)
+    {
+        return;
+    }
+
+    switch (event)
+    {
+    case WICED_BT_A2DP_SINK_CODEC_CONFIG_EVT:
+        if (p_data->codec_config.codec.codec_id == WICED_BT_A2DP_CODEC_SBC)
+        {
+            uint32_t sample_rate = headset_control_a2dp_sbc_sample_rate(p_data->codec_config.codec.cie.sbc.samp_freq);
+            uint8_t channels = headset_control_a2dp_sbc_channel_count(p_data->codec_config.codec.cie.sbc.ch_mode);
+
+            headset_control_diag_logf("HF_AUDIO:A2DP codec=SBC sample_rate=%luHz channels=%u mode=%s bitpool=%u route=I2S role=master sink=%s",
+                                      (unsigned long)sample_rate,
+                                      channels,
+                                      headset_control_a2dp_sbc_channel_mode_name(p_data->codec_config.codec.cie.sbc.ch_mode),
+                                      p_data->codec_config.codec.cie.sbc.max_bitpool,
+                                      headset_control_audio_sink_name(bt_hs_spk_get_audio_sink()));
+        }
+        else
+        {
+            headset_control_diag_logf("HF_AUDIO:A2DP codec=%s raw_id=0x%02X route=I2S role=master sink=%s",
+                                      headset_control_a2dp_codec_name(p_data->codec_config.codec.codec_id),
+                                      p_data->codec_config.codec.codec_id,
+                                      headset_control_audio_sink_name(bt_hs_spk_get_audio_sink()));
+        }
+        headset_control_diag_log_pcm_config("A2DP_CODEC_CONFIG");
+        break;
+
+    case WICED_BT_A2DP_SINK_START_IND_EVT:
+        headset_control_diag_logf("HF_AUDIO:A2DP start_ind handle=%u streaming=%u sink=%s",
+                                  p_data->start_ind.handle,
+                                  bt_hs_spk_audio_is_a2dp_streaming_started(),
+                                  headset_control_audio_sink_name(bt_hs_spk_get_audio_sink()));
+        break;
+
+    case WICED_BT_A2DP_SINK_START_CFM_EVT:
+        headset_control_diag_logf("HF_AUDIO:A2DP start_cfm handle=%u result=0x%X streaming=%u",
+                                  p_data->start_cfm.handle,
+                                  p_data->start_cfm.result,
+                                  bt_hs_spk_audio_is_a2dp_streaming_started());
+        headset_control_diag_log_pcm_config("A2DP_START_CFM");
+        break;
+
+    case WICED_BT_A2DP_SINK_SUSPEND_EVT:
+        headset_control_diag_logf("HF_AUDIO:A2DP suspend handle=%u result=0x%X streaming=%u",
+                                  p_data->suspend.handle,
+                                  p_data->suspend.result,
+                                  bt_hs_spk_audio_is_a2dp_streaming_started());
+        break;
+
+    case WICED_BT_A2DP_SINK_CONNECT_EVT:
+        headset_control_diag_logf("HF_AUDIO:A2DP connect handle=%u result=0x%X",
+                                  p_data->connect.handle,
+                                  p_data->connect.result);
+        break;
+
+    case WICED_BT_A2DP_SINK_DISCONNECT_EVT:
+        headset_control_diag_logf("HF_AUDIO:A2DP disconnect handle=%u result=0x%X",
+                                  p_data->disconnect.handle,
+                                  p_data->disconnect.result);
+        break;
+
+    default:
+        break;
+    }
+}
+#endif
 
 static void headset_control_bridge_queue_tx_line(const uint8_t *line, uint16_t line_len)
 {
@@ -1003,13 +1418,23 @@ static void headset_control_bridge_hfp_event_post_handler(wiced_bt_hfp_hf_event_
     switch (event)
     {
     case WICED_BT_HFP_HF_CONNECTION_STATE_EVT:
+        headset_control_diag_logf("HF_AUDIO:HFP conn_state=%u profile=%u handle=%u",
+                                  p_data->conn_data.conn_state,
+                                  p_data->conn_data.connected_profile,
+                                  p_data->handle);
         if (p_data->conn_data.conn_state == WICED_BT_HFP_HF_STATE_DISCONNECTED)
         {
+            headset_hfp_last_codec_valid = WICED_FALSE;
+            headset_hfp_last_codec = WICED_BT_HFP_HF_CVSD_CODEC;
             headset_control_bridge_reset_call_state();
         }
         break;
 
     case WICED_BT_HFP_HF_CALL_SETUP_EVT:
+        headset_control_diag_logf("HF_AUDIO:HFP call setup=%u active=%u held=%u",
+                                  p_data->call_data.setup_state,
+                                  p_data->call_data.active_call_present,
+                                  p_data->call_data.held_call_present);
         if ((p_data->call_data.setup_state == WICED_BT_HFP_HF_CALLSETUP_STATE_INCOMING) ||
             (p_data->call_data.setup_state == WICED_BT_HFP_HF_CALLSETUP_STATE_WAITING))
         {
@@ -1034,6 +1459,20 @@ static void headset_control_bridge_hfp_event_post_handler(wiced_bt_hfp_hf_event_
     case WICED_BT_HFP_HF_CLIP_IND_EVT:
         headset_control_bridge_queue_cid(p_data->clip.caller_num);
         break;
+
+    case WICED_BT_HFP_HFP_CODEC_SET_EVT:
+    {
+        uint32_t sample_rate = headset_control_hfp_codec_sample_rate(p_data->selected_codec);
+
+        headset_hfp_last_codec = p_data->selected_codec;
+        headset_hfp_last_codec_valid = WICED_TRUE;
+        headset_control_diag_logf("HF_AUDIO:HFP codec=%s sample_rate=%luHz sco_route=I2S/PCM role=master sink=%s",
+                                  headset_control_hfp_codec_name(p_data->selected_codec),
+                                  (unsigned long)sample_rate,
+                                  headset_control_audio_sink_name(bt_hs_spk_get_audio_sink()));
+        headset_control_diag_log_pcm_config("HFP_CODEC_SET");
+        break;
+    }
 
     default:
         break;
@@ -1141,7 +1580,7 @@ void btheadset_control_init(void)
     WICED_BT_TRACE("#########################\n");
     WICED_BT_TRACE("# headset_standalone APP START #\n");
     WICED_BT_TRACE("#########################\n");
-    WICED_BT_TRACE("NavTool PUART marker: HFTEST13 firmware call-status TX on CYBT-343026-EVAL\n");
+    WICED_BT_TRACE("NavTool PUART marker: HFTEST14 I2S audio diagnostics on CYBT-343026-EVAL\n");
     headset_control_start_puart_rx_flush();
 
 #if defined(CYW20721B2) || defined(CYW20706A2)
@@ -1250,8 +1689,15 @@ wiced_result_t btheadset_post_bt_init(void)
         return WICED_BT_ERROR;
     }
 
-    /*Set audio sink*/
-    bt_hs_spk_set_audio_sink(AM_UART);
+    /*
+     * Route phone audio to the local I2S/PCM block for the external CS4344 DAC.
+     * AM_UART is only for host-streamed audio; PUART remains command/status only.
+     */
+    bt_hs_spk_set_audio_sink(AM_SPEAKERS);
+    WICED_BT_TRACE("HF audio sink = AM_SPEAKERS (I2S master / local lineout)\n");
+    headset_control_diag_logf("HF_AUDIO:sink selected=%s puart=commands_only",
+                              headset_control_audio_sink_name(bt_hs_spk_get_audio_sink()));
+    headset_control_diag_log_pcm_config("POST_STACK_INIT");
 
 #if (WICED_APP_LE_INCLUDED == TRUE)
     hci_control_le_enable();
@@ -1536,6 +1982,7 @@ wiced_result_t btheadset_control_management_callback(wiced_bt_management_evt_t e
     case BTM_SCO_CONNECTION_REQUEST_EVT:
     case BTM_SCO_CONNECTION_CHANGE_EVT:
         hf_sco_management_callback(event, p_event_data);
+        headset_control_diag_log_sco_event(event, p_event_data);
 
         if (event == BTM_SCO_DISCONNECTED_EVT)
         {
@@ -1627,6 +2074,12 @@ static void headset_control_start(uint8_t *p_data, uint32_t data_len)
     ret = wiced_audio_buffer_initialize(wiced_bt_audio_buf_config);
     headset_audio_init_result = (uint8_t)ret;
     WICED_BT_TRACE("wiced_audio_buffer_initialize status = 0x%x\n", ret);
+    headset_control_diag_logf("HF_AUDIO:audio_buffer_init status=0x%X role=0x%X tx=%lu codec=%lu free=%lu",
+                              ret,
+                              wiced_bt_audio_buf_config.role,
+                              (unsigned long)wiced_bt_audio_buf_config.audio_tx_buffer_size,
+                              (unsigned long)wiced_bt_audio_buf_config.audio_codec_buffer_size,
+                              (unsigned long)wiced_memory_get_free_bytes());
     if (ret == WICED_BT_SUCCESS)
     {
         headset_control_hci_send_startup_stage(3);
@@ -1914,6 +2367,8 @@ static wiced_bool_t headset_control_mic_data_add_callback(uint8_t *p_data, uint3
  */
 static void headset_control_a2dp_sink_event_post_handler(wiced_bt_a2dp_sink_event_t event, wiced_bt_a2dp_sink_event_data_t* p_data)
 {
+    headset_control_diag_log_a2dp_event(event, p_data);
+
     switch (event)
     {
     case WICED_BT_A2DP_SINK_START_IND_EVT:
