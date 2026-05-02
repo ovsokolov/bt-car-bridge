@@ -136,7 +136,7 @@
 **  Constants
 *****************************************************************************/
 #define HEADSET_CONTROL_MIC_DATA_BUFFER_LEN 1024    // bytes
-#define HEADSET_IDENTITY_BASE               "NavTool-PhoneConnect-HFTEST14"
+#define HEADSET_IDENTITY_BASE               "NavTool-PhoneConnect-HFTEST20"
 #define HEADSET_HCI_EVENT_STARTUP_STAGE     ((HCI_CONTROL_GROUP_MISC << 8) | 0x22)
 #define HEADSET_HCI_EVENT_AUDIO_INIT_DIAG   ((HCI_CONTROL_GROUP_MISC << 8) | 0x23)
 #define HEADSET_HCI_EVENT_PROFILE_SUMMARY   ((HCI_CONTROL_GROUP_MISC << 8) | 0x24)
@@ -146,6 +146,10 @@
 #define HEADSET_PUART_RX_FLUSH_INTERVAL_SEC 1U
 #define HEADSET_AUTORECONNECT_DELAY_SEC     2U
 #define HEADSET_AUTORECONNECT_RETRY_SEC     10U
+#define HEADSET_A2DP_RECONNECT_DELAY_SEC    4U
+#define HEADSET_A2DP_RECONNECT_RETRY_SEC    10U
+#define HEADSET_A2DP_RECONNECT_CLEANUP_SEC  1U
+#define HEADSET_A2DP_RECONNECT_MAX_ATTEMPTS 3U
 #define HEADSET_BRIDGE_LINE_MAX             160U
 #define HEADSET_BRIDGE_RX_QUEUE_DEPTH       8U
 #define HEADSET_BRIDGE_TX_QUEUE_DEPTH       8U
@@ -209,6 +213,11 @@ static void headset_control_schedule_auto_reconnect(void);
 static void headset_control_start_auto_reconnect_retry(void);
 static void headset_control_stop_auto_reconnect_retry(void);
 static void headset_control_auto_reconnect_bonded_peer(void);
+static void headset_control_schedule_a2dp_reconnect(const char *reason, uint32_t delay_sec);
+static void headset_control_stop_a2dp_reconnect(void);
+static void headset_control_a2dp_reconnect_timer_cb(uint32_t arg);
+static void headset_control_a2dp_reconnect_attempt(void);
+static void headset_control_bridge_schedule_media_state_request(const char *reason);
 static wiced_bool_t headset_control_conn_status_cb(wiced_bt_device_address_t bd_addr,
                                                    uint8_t *p_features,
                                                    wiced_bool_t is_connected,
@@ -301,14 +310,25 @@ static uint8_t headset_audio_init_result = 0xFF;
 static wiced_timer_t headset_puart_rx_flush_timer;
 static wiced_timer_t headset_autoreconnect_timer;
 static wiced_timer_t headset_autoreconnect_retry_timer;
+static wiced_timer_t headset_a2dp_reconnect_timer;
 static wiced_bool_t headset_puart_rx_flush_timer_initialized = WICED_FALSE;
 static wiced_bool_t headset_autoreconnect_timer_initialized = WICED_FALSE;
 static wiced_bool_t headset_autoreconnect_retry_timer_initialized = WICED_FALSE;
+static wiced_bool_t headset_a2dp_reconnect_timer_initialized = WICED_FALSE;
 static wiced_bool_t headset_autoreconnect_retry_active = WICED_FALSE;
 static wiced_bool_t headset_autoreconnect_started = WICED_FALSE;
 static wiced_bool_t headset_pairing_override_active = WICED_FALSE;
-static wiced_bool_t headset_connect_profiles_after_pairing = WICED_FALSE;
 static wiced_bool_t headset_br_edr_connected = WICED_FALSE;
+static wiced_bool_t headset_hfp_slc_connected = WICED_FALSE;
+static wiced_bool_t headset_a2dp_connected = WICED_FALSE;
+static wiced_bool_t headset_a2dp_reconnect_pending = WICED_FALSE;
+static wiced_bool_t headset_a2dp_reconnect_waiting_for_result = WICED_FALSE;
+static wiced_bool_t headset_a2dp_reconnect_precleaned = WICED_FALSE;
+static wiced_bool_t headset_last_br_edr_bdaddr_valid = WICED_FALSE;
+static uint16_t headset_a2dp_last_handle = 0;
+static uint8_t headset_a2dp_reconnect_attempts = 0;
+static wiced_bt_device_address_t headset_last_br_edr_bdaddr = { 0 };
+static wiced_bool_t headset_bridge_media_state_pending = WICED_FALSE;
 static uint8_t headset_bridge_rx_line[HEADSET_BRIDGE_LINE_MAX];
 static uint16_t headset_bridge_rx_len = 0;
 static uint8_t headset_bridge_pending_rx_line[HEADSET_BRIDGE_RX_QUEUE_DEPTH][HEADSET_BRIDGE_LINE_MAX];
@@ -1017,6 +1037,7 @@ static void headset_control_bridge_flush_tx_queue(void)
 static void headset_control_auto_reconnect_timer_cb(uint32_t arg)
 {
     UNUSED_VARIABLE(arg);
+    headset_autoreconnect_started = WICED_FALSE;
     headset_control_auto_reconnect_bonded_peer();
 }
 
@@ -1096,6 +1117,148 @@ static void headset_control_stop_auto_reconnect_retry(void)
     headset_control_bridge_hci_log("", retry_stopped, sizeof(retry_stopped) - 1U);
 }
 
+static void headset_control_stop_a2dp_reconnect(void)
+{
+    headset_a2dp_reconnect_pending = WICED_FALSE;
+    headset_a2dp_reconnect_waiting_for_result = WICED_FALSE;
+    headset_a2dp_reconnect_precleaned = WICED_FALSE;
+
+    if (headset_a2dp_reconnect_timer_initialized)
+    {
+        wiced_stop_timer(&headset_a2dp_reconnect_timer);
+    }
+}
+
+static void headset_control_schedule_a2dp_reconnect(const char *reason, uint32_t delay_sec)
+{
+    if (!headset_br_edr_connected ||
+        !headset_hfp_slc_connected ||
+        headset_a2dp_connected ||
+        !headset_last_br_edr_bdaddr_valid)
+    {
+        return;
+    }
+
+    if ((headset_a2dp_reconnect_attempts >= HEADSET_A2DP_RECONNECT_MAX_ATTEMPTS) &&
+        (headset_a2dp_reconnect_waiting_for_result == WICED_FALSE))
+    {
+        headset_control_diag_logf("AUTORECONNECT:A2DP max attempts reached reason=%s", reason);
+        return;
+    }
+
+    if (headset_a2dp_reconnect_pending)
+    {
+        return;
+    }
+
+    if (!headset_a2dp_reconnect_timer_initialized)
+    {
+        wiced_init_timer(&headset_a2dp_reconnect_timer,
+                         headset_control_a2dp_reconnect_timer_cb,
+                         0,
+                         WICED_SECONDS_TIMER);
+        headset_a2dp_reconnect_timer_initialized = WICED_TRUE;
+    }
+
+    headset_a2dp_reconnect_pending = WICED_TRUE;
+    wiced_start_timer(&headset_a2dp_reconnect_timer, delay_sec);
+    headset_control_diag_logf("AUTORECONNECT:A2DP schedule reason=%s delay=%u next=%u",
+                              reason,
+                              (unsigned int)delay_sec,
+                              (unsigned int)(headset_a2dp_reconnect_attempts +
+                                             ((headset_a2dp_reconnect_waiting_for_result == WICED_TRUE) ? 0U : 1U)));
+}
+
+static void headset_control_a2dp_reconnect_timer_cb(uint32_t arg)
+{
+    UNUSED_VARIABLE(arg);
+    headset_a2dp_reconnect_pending = WICED_FALSE;
+    headset_control_a2dp_reconnect_attempt();
+}
+
+static void headset_control_a2dp_reconnect_attempt(void)
+{
+    wiced_result_t status;
+#if defined(CYW20706A2)
+    wiced_bool_t connected = WICED_FALSE;
+#endif
+
+    if (!headset_br_edr_connected ||
+        !headset_hfp_slc_connected ||
+        headset_a2dp_connected ||
+        !headset_last_br_edr_bdaddr_valid)
+    {
+        return;
+    }
+
+    if ((headset_a2dp_reconnect_precleaned == WICED_FALSE) &&
+        (headset_a2dp_reconnect_attempts == 0U))
+    {
+        status = wiced_bt_a2dp_sink_disconnect(headset_a2dp_last_handle);
+        headset_a2dp_reconnect_precleaned = WICED_TRUE;
+        headset_control_diag_logf("AUTORECONNECT:A2DP precleanup handle=%u status=0x%X",
+                                  (unsigned int)headset_a2dp_last_handle,
+                                  (unsigned int)status);
+        headset_control_schedule_a2dp_reconnect("precleanup", HEADSET_A2DP_RECONNECT_CLEANUP_SEC);
+        return;
+    }
+
+    if (headset_a2dp_reconnect_waiting_for_result)
+    {
+        status = wiced_bt_a2dp_sink_disconnect(headset_a2dp_last_handle);
+        headset_a2dp_reconnect_waiting_for_result = WICED_FALSE;
+        headset_control_diag_logf("AUTORECONNECT:A2DP cleanup handle=%u status=0x%X",
+                                  (unsigned int)headset_a2dp_last_handle,
+                                  (unsigned int)status);
+
+        if (headset_a2dp_reconnect_attempts < HEADSET_A2DP_RECONNECT_MAX_ATTEMPTS)
+        {
+            headset_control_schedule_a2dp_reconnect("cleanup", HEADSET_A2DP_RECONNECT_CLEANUP_SEC);
+        }
+        return;
+    }
+
+    if (headset_a2dp_reconnect_attempts >= HEADSET_A2DP_RECONNECT_MAX_ATTEMPTS)
+    {
+        headset_control_diag_logf("AUTORECONNECT:A2DP skip max attempts");
+        return;
+    }
+
+#if defined(CYW20706A2)
+    if ((bt_hs_spk_audio_a2dp_connection_check(headset_last_br_edr_bdaddr, &connected) == WICED_TRUE) &&
+        (connected == WICED_TRUE))
+    {
+        headset_a2dp_connected = WICED_TRUE;
+        headset_a2dp_reconnect_attempts = 0;
+        headset_control_stop_a2dp_reconnect();
+        headset_control_stop_auto_reconnect_retry();
+        if ((headset_bridge_media_state_pending == WICED_TRUE) &&
+            (headset_bridge_avrc_connected == WICED_TRUE))
+        {
+            headset_control_bridge_schedule_media_state_request("a2dp");
+        }
+        headset_control_diag_logf("AUTORECONNECT:A2DP already connected");
+        return;
+    }
+#endif
+
+    headset_a2dp_reconnect_attempts++;
+    status = wiced_bt_a2dp_sink_connect(headset_last_br_edr_bdaddr);
+    headset_control_diag_logf("AUTORECONNECT:A2DP attempt=%u status=0x%X",
+                              headset_a2dp_reconnect_attempts,
+                              (unsigned int)status);
+
+    if (status == WICED_SUCCESS)
+    {
+        headset_a2dp_reconnect_waiting_for_result = WICED_TRUE;
+        headset_control_schedule_a2dp_reconnect("verify", HEADSET_A2DP_RECONNECT_RETRY_SEC);
+    }
+    else if (headset_a2dp_reconnect_attempts < HEADSET_A2DP_RECONNECT_MAX_ATTEMPTS)
+    {
+        headset_control_schedule_a2dp_reconnect("api_fail", HEADSET_A2DP_RECONNECT_RETRY_SEC);
+    }
+}
+
 static void headset_control_cancel_auto_reconnect_for_pairing(void)
 {
     static const uint8_t pairing_pause[] = "PAIR:manual visibility cancels autoreconnect";
@@ -1123,7 +1286,6 @@ static void headset_control_auto_reconnect_bonded_peer(void)
     static const uint8_t attempt[] = "AUTORECONNECT:start HFP_HF+A2DP_SINK";
     static const uint8_t busy[] = "AUTORECONNECT:already connecting";
     static const uint8_t requested[] = "AUTORECONNECT:requested";
-    static const uint8_t profile_after_pair[] = "PAIR:connect profiles after pairing";
 
     if (headset_pairing_override_active)
     {
@@ -1135,7 +1297,7 @@ static void headset_control_auto_reconnect_bonded_peer(void)
     bt_hs_spk_control_handle_set_pairability(WICED_FALSE);
     bt_hs_spk_control_handle_set_visibility(WICED_FALSE, WICED_TRUE, BT_TRANSPORT_BR_EDR);
 
-    if (headset_br_edr_connected && !headset_connect_profiles_after_pairing)
+    if (headset_br_edr_connected)
     {
         headset_control_stop_auto_reconnect_retry();
         return;
@@ -1145,10 +1307,6 @@ static void headset_control_auto_reconnect_bonded_peer(void)
         (bt_hs_spk_control_misc_data_content_check((uint8_t *)p_link_keys[0].bd_addr,
                                                    sizeof(p_link_keys[0].bd_addr)) == WICED_TRUE))
     {
-        if (headset_connect_profiles_after_pairing)
-        {
-            headset_control_bridge_hci_log("", profile_after_pair, sizeof(profile_after_pair) - 1U);
-        }
         if (bt_hs_spk_control_reconnect_state_get() == WICED_TRUE)
         {
             headset_control_bridge_hci_log("", busy, sizeof(busy) - 1U);
@@ -1157,7 +1315,6 @@ static void headset_control_auto_reconnect_bonded_peer(void)
         }
 
         headset_control_bridge_hci_log("", attempt, sizeof(attempt) - 1U);
-        headset_connect_profiles_after_pairing = WICED_FALSE;
         bt_hs_spk_control_reconnect();
         headset_control_bridge_hci_log("", requested, sizeof(requested) - 1U);
         headset_control_start_auto_reconnect_retry();
@@ -1179,9 +1336,9 @@ static wiced_bool_t headset_control_conn_status_cb(wiced_bt_device_address_t bd_
     static const uint8_t link_up[] = "AUTORECONNECT:BR_EDR link up";
     static const uint8_t link_down[] = "AUTORECONNECT:BR_EDR link down retry scheduled";
 
-    UNUSED_VARIABLE(bd_addr);
     UNUSED_VARIABLE(p_features);
     UNUSED_VARIABLE(handle);
+    UNUSED_VARIABLE(reason);
 
     if (transport == BT_TRANSPORT_BR_EDR)
     {
@@ -1189,20 +1346,26 @@ static wiced_bool_t headset_control_conn_status_cb(wiced_bt_device_address_t bd_
 
         if (is_connected)
         {
+            memcpy(headset_last_br_edr_bdaddr, bd_addr, sizeof(headset_last_br_edr_bdaddr));
+            headset_last_br_edr_bdaddr_valid = WICED_TRUE;
             headset_control_bridge_hci_log("", link_up, sizeof(link_up) - 1U);
-            headset_control_stop_auto_reconnect_retry();
             if (headset_pairing_override_active)
             {
-                static const uint8_t link_profile_connect[] = "PAIR:BR_EDR link up schedule profile connect";
+                static const uint8_t link_profile_wait[] = "PAIR:BR_EDR link up wait profile";
                 headset_pairing_override_active = WICED_FALSE;
-                headset_connect_profiles_after_pairing = WICED_TRUE;
-                headset_control_bridge_hci_log("", link_profile_connect, sizeof(link_profile_connect) - 1U);
-                headset_control_schedule_auto_reconnect();
+                headset_control_bridge_hci_log("", link_profile_wait, sizeof(link_profile_wait) - 1U);
             }
+            headset_control_schedule_a2dp_reconnect("acl_up", HEADSET_A2DP_RECONNECT_DELAY_SEC);
         }
         else
         {
-            UNUSED_VARIABLE(reason);
+            headset_hfp_slc_connected = WICED_FALSE;
+            headset_a2dp_connected = WICED_FALSE;
+            headset_a2dp_reconnect_attempts = 0;
+            headset_a2dp_last_handle = 0;
+            headset_last_br_edr_bdaddr_valid = WICED_FALSE;
+            headset_bridge_media_state_pending = WICED_FALSE;
+            headset_control_stop_a2dp_reconnect();
             headset_control_bridge_hci_log("", link_down, sizeof(link_down) - 1U);
             if (!headset_pairing_override_active)
             {
@@ -1436,6 +1599,40 @@ static const char *headset_control_bridge_metadata_prefix(uint32_t attr_id)
     }
 }
 
+static wiced_bool_t headset_control_bridge_metadata_is_dummy(const uint8_t *p_text, uint16_t text_len)
+{
+    uint16_t start = 0;
+    uint16_t end = text_len;
+
+    if (p_text == NULL)
+    {
+        return WICED_TRUE;
+    }
+
+    while ((start < end) &&
+           ((p_text[start] == ' ') || (p_text[start] == '\t') ||
+            (p_text[start] == '\r') || (p_text[start] == '\n') ||
+            (p_text[start] == '\0')))
+    {
+        start++;
+    }
+
+    while ((end > start) &&
+           ((p_text[end - 1U] == ' ') || (p_text[end - 1U] == '\t') ||
+            (p_text[end - 1U] == '\r') || (p_text[end - 1U] == '\n') ||
+            (p_text[end - 1U] == '\0')))
+    {
+        end--;
+    }
+
+    if (start == end)
+    {
+        return WICED_TRUE;
+    }
+
+    return (((end - start) == 1U) && (p_text[start] == '0')) ? WICED_TRUE : WICED_FALSE;
+}
+
 static void headset_control_bridge_queue_metadata_attr(uint32_t attr_id,
                                                        const uint8_t *p_text,
                                                        uint16_t text_len)
@@ -1446,7 +1643,7 @@ static void headset_control_bridge_queue_metadata_attr(uint32_t attr_id,
     uint16_t len = 0;
     uint16_t index;
 
-    if ((prefix == NULL) || (p_text == NULL))
+    if ((prefix == NULL) || (headset_control_bridge_metadata_is_dummy(p_text, text_len) == WICED_TRUE))
     {
         return;
     }
@@ -1495,6 +1692,25 @@ static void headset_control_bridge_request_media_state(void)
     wiced_bt_avrc_ct_get_play_status_cmd(headset_bridge_avrc_handle);
 }
 
+static void headset_control_bridge_schedule_media_state_request(const char *reason)
+{
+    if (headset_bridge_avrc_connected == WICED_FALSE)
+    {
+        headset_control_diag_logf("HF_MEDIA:%s no phone AVRCP link", reason);
+        return;
+    }
+
+    if (headset_a2dp_connected == WICED_FALSE)
+    {
+        headset_bridge_media_state_pending = WICED_TRUE;
+        headset_control_diag_logf("HF_MEDIA:defer metadata/status reason=%s", reason);
+        return;
+    }
+
+    headset_bridge_media_state_pending = WICED_FALSE;
+    headset_control_bridge_request_media_state();
+}
+
 static wiced_result_t headset_control_bridge_send_avrc_passthrough(uint8_t op_id, const char *name)
 {
     wiced_result_t result;
@@ -1524,7 +1740,7 @@ static wiced_result_t headset_control_bridge_send_avrc_passthrough(uint8_t op_id
          (op_id == AVRC_ID_PLAY) || (op_id == AVRC_ID_PAUSE) ||
          (op_id == AVRC_ID_STOP)))
     {
-        headset_control_bridge_request_media_state();
+        headset_control_bridge_schedule_media_state_request("control");
     }
 
     return result;
@@ -1576,7 +1792,7 @@ static wiced_bool_t headset_control_bridge_handle_media_line(const uint8_t *line
 
     if (headset_control_bridge_line_matches(line, line_len, "BR1,MEDIA,META"))
     {
-        headset_control_bridge_request_media_state();
+        headset_control_bridge_schedule_media_state_request("uart");
         return WICED_TRUE;
     }
 
@@ -1633,12 +1849,13 @@ static void headset_control_bridge_avrc_connection_state_post_handler(uint8_t ha
     {
         headset_bridge_avrc_handle = handle;
         headset_bridge_avrc_connected = WICED_TRUE;
-        headset_control_bridge_request_media_state();
+        headset_control_bridge_schedule_media_state_request("avrc");
     }
     else if (connection_state == REMOTE_CONTROL_DISCONNECTED)
     {
         headset_bridge_avrc_connected = WICED_FALSE;
         headset_bridge_avrc_handle = 0;
+        headset_bridge_media_state_pending = WICED_FALSE;
     }
 }
 
@@ -1688,6 +1905,8 @@ static void headset_control_bridge_avrc_response_post_handler(uint8_t handle, wi
                                                        attr_entry.name.name.p_str,
                                                        attr_entry.name.name.str_len);
         }
+
+        headset_control_bridge_queue_literal("BR1,META,DONE");
     }
     else if (pdu == AVRC_PDU_GET_PLAY_STATUS)
     {
@@ -1705,7 +1924,7 @@ static void headset_control_bridge_avrc_response_post_handler(uint8_t handle, wi
         }
         else if (event_id == AVRC_EVT_TRACK_CHANGE)
         {
-            headset_control_bridge_request_media_state();
+            headset_control_bridge_schedule_media_state_request("track");
         }
     }
 }
@@ -1736,6 +1955,7 @@ static void headset_control_bridge_avrc_response_post_handler(uint8_t handle, wi
                                                        avrc_rsp->get_elem_attrs.p_attrs[attr_index].name.p_str,
                                                        avrc_rsp->get_elem_attrs.p_attrs[attr_index].name.str_len);
         }
+        headset_control_bridge_queue_literal("BR1,META,DONE");
         break;
 
     case AVRC_PDU_GET_PLAY_STATUS:
@@ -1759,7 +1979,7 @@ static void headset_control_bridge_avrc_response_post_handler(uint8_t handle, wi
         }
         else if (avrc_rsp->reg_notif.event_id == AVRC_EVT_TRACK_CHANGE)
         {
-            headset_control_bridge_request_media_state();
+            headset_control_bridge_schedule_media_state_request("track");
         }
         break;
 
@@ -1786,9 +2006,16 @@ static void headset_control_bridge_hfp_event_post_handler(wiced_bt_hfp_hf_event_
                                   p_data->handle);
         if (p_data->conn_data.conn_state == WICED_BT_HFP_HF_STATE_DISCONNECTED)
         {
+            headset_hfp_slc_connected = WICED_FALSE;
             headset_hfp_last_codec_valid = WICED_FALSE;
             headset_hfp_last_codec = WICED_BT_HFP_HF_CVSD_CODEC;
+            headset_control_stop_a2dp_reconnect();
             headset_control_bridge_reset_call_state();
+        }
+        else if (p_data->conn_data.conn_state == WICED_BT_HFP_HF_STATE_SLC_CONNECTED)
+        {
+            headset_hfp_slc_connected = WICED_TRUE;
+            headset_control_schedule_a2dp_reconnect("hfp_slc", HEADSET_A2DP_RECONNECT_DELAY_SEC);
         }
         break;
 
@@ -1942,7 +2169,7 @@ void btheadset_control_init(void)
     WICED_BT_TRACE("#########################\n");
     WICED_BT_TRACE("# headset_standalone APP START #\n");
     WICED_BT_TRACE("#########################\n");
-    WICED_BT_TRACE("NavTool PUART marker: HFTEST14 I2S audio diagnostics on CYBT-343026-EVAL\n");
+    WICED_BT_TRACE("NavTool PUART marker: HFTEST20 A2DP reconnect cleanup diagnostics on CYBT-343026-EVAL\n");
     headset_control_start_puart_rx_flush();
 
 #if defined(CYW20721B2) || defined(CYW20706A2)
@@ -2268,7 +2495,6 @@ wiced_result_t btheadset_control_management_callback(wiced_bt_management_evt_t e
             if (pairing_result == WICED_BT_SUCCESS)
             {
                 static const uint8_t pairing_success[] = "PAIR:BR_EDR complete wait link/profile";
-                headset_connect_profiles_after_pairing = WICED_TRUE;
                 headset_control_bridge_hci_log("", pairing_success, sizeof(pairing_success) - 1U);
             }
         }
@@ -2737,6 +2963,39 @@ static void headset_control_a2dp_sink_event_post_handler(wiced_bt_a2dp_sink_even
 
     switch (event)
     {
+    case WICED_BT_A2DP_SINK_CONNECT_EVT:
+        if ((p_data != NULL) && (p_data->connect.result == WICED_SUCCESS))
+        {
+            headset_a2dp_connected = WICED_TRUE;
+            headset_a2dp_last_handle = p_data->connect.handle;
+            headset_a2dp_reconnect_attempts = 0;
+            headset_control_stop_a2dp_reconnect();
+            if (headset_hfp_slc_connected)
+            {
+                headset_control_stop_auto_reconnect_retry();
+            }
+            if ((headset_bridge_media_state_pending == WICED_TRUE) &&
+                (headset_bridge_avrc_connected == WICED_TRUE))
+            {
+                headset_control_bridge_schedule_media_state_request("a2dp");
+            }
+        }
+        else
+        {
+            headset_a2dp_connected = WICED_FALSE;
+            headset_a2dp_reconnect_waiting_for_result = WICED_FALSE;
+            headset_control_schedule_a2dp_reconnect("connect_fail", HEADSET_A2DP_RECONNECT_RETRY_SEC);
+        }
+        break;
+
+    case WICED_BT_A2DP_SINK_DISCONNECT_EVT:
+        headset_a2dp_connected = WICED_FALSE;
+        headset_a2dp_last_handle = 0;
+        headset_a2dp_reconnect_waiting_for_result = WICED_FALSE;
+        headset_bridge_media_state_pending = WICED_FALSE;
+        headset_control_schedule_a2dp_reconnect("disconnect", HEADSET_A2DP_RECONNECT_RETRY_SEC);
+        break;
+
     case WICED_BT_A2DP_SINK_START_IND_EVT:
     case WICED_BT_A2DP_SINK_START_CFM_EVT:
         if (bt_hs_spk_audio_is_a2dp_streaming_started())
